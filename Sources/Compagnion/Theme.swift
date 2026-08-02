@@ -17,12 +17,15 @@ enum Theme {
         static let errorContainer = Color(hex: "#FFDAD6")
         static let hairline = Color(hex: "#E5E5EA")
 
-        // Waiting-for-you accent (orange family; no exact hex given in the
-        // token table, so system orange is used as the base).
-        static let waiting = Color.orange
-        static let waitingText = Color(hex: "#EA580C")
-        static let waitingBackground = Color.orange.opacity(0.08)
-        static let waitingBorder = Color.orange.opacity(0.25)
+        // Waiting-for-you accent. The design uses Tailwind's orange ramp;
+        // alpha-blending system orange lands far too saturated, so these are
+        // the literal orange-50/100/400/600/700 values.
+        static let waiting = Color(hex: "#FB923C")          // orange-400, bar fill
+        static let waitingText = Color(hex: "#EA580C")      // orange-600, badge
+        static let waitingBackground = Color(hex: "#FFF7ED").opacity(0.5)  // orange-50/50
+        static let waitingBorder = Color(hex: "#FFEDD5")    // orange-100
+        static let waitingChip = Color(hex: "#FFEDD5")      // orange-100
+        static let contextWarning = Color(hex: "#C2410C")   // orange-700, label
     }
 
     enum Fonts {
@@ -57,12 +60,36 @@ enum Theme {
         static let footerButtonSize: CGFloat = 28
     }
 
-    /// Context-fill color ramp shared by `ContextBar` and `RingGauge`:
-    /// primary below 70%, orange 70–90%, error at/above 90%.
+    /// Per-session context-fill ramp: primary below 70%, orange 70–90%,
+    /// error at/above 90%.
     static func contextColor(for fraction: Double) -> Color {
         if fraction >= 0.90 {
             return Colors.error
         } else if fraction >= 0.70 {
+            return Colors.waiting
+        } else {
+            return Colors.primary
+        }
+    }
+
+    /// Text accompanying a context bar, which only leaves neutral once the
+    /// value is worth reacting to.
+    static func contextLabelColor(for fraction: Double) -> Color {
+        if fraction >= 0.90 {
+            return Colors.error
+        } else if fraction >= 0.70 {
+            return Colors.contextWarning
+        } else {
+            return Colors.onSurfaceVariant
+        }
+    }
+
+    /// Account-quota ramp for the header rings. Deliberately stricter than
+    /// `contextColor`: a full context window is routine, a spent quota is not.
+    static func quotaColor(for fraction: Double) -> Color {
+        if fraction >= 0.90 {
+            return Colors.error
+        } else if fraction >= 0.75 {
             return Colors.waiting
         } else {
             return Colors.primary

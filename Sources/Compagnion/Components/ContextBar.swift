@@ -6,13 +6,19 @@ import SwiftUI
 struct ContextBar: View {
     let fraction: Double?
     var isStale: Bool = false
+    /// An idle session's bar goes neutral and recedes, like the rest of its card.
+    var isMuted: Bool = false
 
     private var clamped: Double {
         min(max(fraction ?? 0, 0), 1)
     }
 
     private var fillColor: Color {
-        Theme.contextColor(for: fraction ?? 0)
+        isMuted ? Theme.Colors.outline : Theme.contextColor(for: fraction ?? 0)
+    }
+
+    private var labelColor: Color {
+        isMuted ? Theme.Colors.onSurfaceVariant : Theme.contextLabelColor(for: fraction ?? 0)
     }
 
     private var label: String? {
@@ -37,7 +43,7 @@ struct ContextBar: View {
             if let label {
                 Text(label)
                     .font(Theme.Fonts.mono)
-                    .foregroundStyle(Theme.Colors.onSurfaceVariant)
+                    .foregroundStyle(labelColor)
             }
 
             if isStale {
@@ -47,7 +53,7 @@ struct ContextBar: View {
                     .help("Value may be out of date")
             }
         }
-        .opacity(fraction == nil ? 0.4 : 1)
+        .opacity(fraction == nil || isMuted ? 0.4 : 1)
     }
 }
 
