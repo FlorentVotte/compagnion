@@ -93,6 +93,7 @@ private struct Enrichment: Sendable {
     var identity: [String: SessionIdentity] = [:]
     var context: [String: ContextUsage] = [:]
     var aiTitle: [String: String] = [:]
+    var model: [String: String] = [:]
 }
 
 @MainActor
@@ -136,6 +137,11 @@ final class SessionMonitor: ObservableObject {
     private var identities: [String: SessionIdentity] = [:]
     private var aiTitles: [String: String] = [:]
     private var contextUsage: [String: ContextUsage] = [:]
+    /// Short model labels per session. The statusline one wins (it reflects a
+    /// live `/model` switch immediately); the transcript one fills the gap
+    /// for sessions that haven't produced a statusline push this run.
+    private var modelFromStatusline: [String: String] = [:]
+    private var modelFromTranscript: [String: String] = [:]
     private var subagentCounts: [String: Int] = [:]
     /// Hook-reported waiting episodes, by session id, stamped when the hook
     /// landed. Bridges the gap until the poll can confirm — see `rebuild`.
@@ -254,6 +260,7 @@ final class SessionMonitor: ObservableObject {
         case .success(let sessions):
             identities.merge(enrichment.identity) { _, new in new }
             aiTitles.merge(enrichment.aiTitle) { _, new in new }
+            modelFromTranscript.merge(enrichment.model) { _, new in new }
             // Statusline data is fresher and cheaper than a transcript read,
             // so it wins whenever we have a recent value.
             for (id, usage) in enrichment.context {
@@ -276,6 +283,8 @@ final class SessionMonitor: ObservableObject {
         aiTitles = aiTitles.filter { liveIDs.contains($0.key) }
         contextUsage = contextUsage.filter { liveIDs.contains($0.key) }
         windowSizes = windowSizes.filter { liveIDs.contains($0.key) }
+        modelFromStatusline = modelFromStatusline.filter { liveIDs.contains($0.key) }
+        modelFromTranscript = modelFromTranscript.filter { liveIDs.contains($0.key) }
         subagentCounts = subagentCounts.filter { liveIDs.contains($0.key) }
         pendingTools = pendingTools.filter { liveIDs.contains($0.key) }
         waitingOverrides = waitingOverrides.filter { liveIDs.contains($0.key) }
@@ -298,6 +307,7 @@ final class SessionMonitor: ObservableObject {
                 display.messageCount = identity.messageCount
             }
             display.aiTitle = aiTitles[session.id]
+            display.modelName = modelFromStatusline[session.id] ?? modelFromTranscript[session.id]
             if let usage = contextUsage[session.id] {
                 display.contextFraction = usage.fraction
                 display.contextMeasuredAt = usage.measuredAt
@@ -370,6 +380,10 @@ final class SessionMonitor: ObservableObject {
                 let tail = enricher.readTail(transcriptPath: path, contextWindowSize: assumed)
                 if let usage = tail.usage { result.context[session.id] = usage }
                 if let title = tail.aiTitle { result.aiTitle[session.id] = title }
+                if let modelId = tail.modelId,
+                   let name = SessionDisplay.shortModelName(fromId: modelId) {
+                    result.model[session.id] = name
+                }
             }
         }
         return result
@@ -645,6 +659,17 @@ final class SessionMonitor: ObservableObject {
                 for index in displays.indices where displays[index].id == sessionId {
                     displays[index].contextFraction = fraction
                     displays[index].contextMeasuredAt = Date()
+                }
+            }
+        }
+
+        if let model = statusline.model, let sessionId = statusline.sessionId {
+            let name = model.displayName.flatMap(SessionDisplay.shortModelName(fromDisplayName:))
+                ?? model.id.flatMap(SessionDisplay.shortModelName(fromId:))
+            if let name {
+                modelFromStatusline[sessionId] = name
+                for index in displays.indices where displays[index].id == sessionId {
+                    displays[index].modelName = name
                 }
             }
         }

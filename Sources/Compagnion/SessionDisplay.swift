@@ -37,6 +37,10 @@ struct SessionDisplay: Identifiable, Equatable {
     var contextFraction: Double?
     var contextMeasuredAt: Date?
 
+    /// Short model label ("Opus 5", "Haiku 4.5"), from the statusline when
+    /// fresh, else the transcript's last `message.model`.
+    var modelName: String?
+
     /// Phase 5 — live count from SubagentStart/SubagentStop hook events.
     var subagentCount: Int = 0
 
@@ -79,6 +83,33 @@ struct SessionDisplay: Identifiable, Equatable {
         }
         if let aiTitle, !aiTitle.isEmpty { return aiTitle }
         return session.displayName
+    }
+
+    /// "claude-opus-5[1m]" → "Opus 5", "claude-haiku-4-5-20251001" →
+    /// "Haiku 4.5". The context tier and date-stamp tokens say nothing the
+    /// card doesn't already show, so they're dropped.
+    static func shortModelName(fromId id: String) -> String? {
+        var bare = id.trimmingCharacters(in: .whitespaces).lowercased()
+        if let bracket = bare.firstIndex(of: "[") { bare = String(bare[..<bracket]) }
+        if bare.hasPrefix("claude-") { bare.removeFirst("claude-".count) }
+        let tokens = bare.split(separator: "-").map(String.init)
+        guard let family = tokens.first, !family.isEmpty else { return nil }
+        // Version parts are short numbers; an 8-digit token is a date stamp.
+        let version = tokens.dropFirst()
+            .filter { $0.allSatisfy(\.isNumber) && $0.count < 8 }
+            .joined(separator: ".")
+        let name = family.prefix(1).uppercased() + family.dropFirst()
+        return version.isEmpty ? name : "\(name) \(version)"
+    }
+
+    /// Statusline `display_name` is authoritative but wordy —
+    /// "Opus 5 (1M context)" → "Opus 5"; the gauge next to it already
+    /// communicates the window.
+    static func shortModelName(fromDisplayName displayName: String) -> String? {
+        let trimmed = displayName
+            .replacingOccurrences(of: #"\s*\(.*\)$"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// Claude Code names unnamed sessions `<folder>-<two hex chars>`.

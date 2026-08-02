@@ -81,10 +81,15 @@ struct StatuslineUpdate: Decodable, Sendable {
         let fiveHour: RateLimitWindow?
         let sevenDay: RateLimitWindow?
     }
+    struct Model: Decodable, Sendable {
+        let id: String?             // "claude-opus-5[1m]"
+        let displayName: String?    // "Opus 5 (1M context)"
+    }
     let sessionId: String?
     let cwd: String?
     let contextWindow: ContextWindow?
     let rateLimits: RateLimits?
+    let model: Model?
 }
 
 /// A decoded `POST /event` body, discriminated by which top-level key is
@@ -148,7 +153,8 @@ private func decodeCompagnionEvent(_ body: Data) -> CompagnionEvent? {
                 sessionId: nestedId,
                 cwd: statusline.cwd,
                 contextWindow: statusline.contextWindow,
-                rateLimits: statusline.rateLimits
+                rateLimits: statusline.rateLimits,
+                model: statusline.model
             )
         }
         return .statusline(statusline)

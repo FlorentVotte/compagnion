@@ -15,6 +15,7 @@ struct SessionIdentity: Equatable {
 struct TranscriptTail: Equatable {
     var usage: ContextUsage?
     var aiTitle: String?
+    var modelId: String?    // bare id from `message.model`, e.g. "claude-opus-5"
 }
 
 struct ContextUsage: Equatable {
@@ -157,7 +158,10 @@ final class SessionEnricher: @unchecked Sendable {
             if result.aiTitle == nil {
                 result.aiTitle = Self.latestAITitle(in: lines)
             }
-            if result.usage != nil && result.aiTitle != nil { return result }
+            if result.modelId == nil {
+                result.modelId = Self.latestModelId(in: lines)
+            }
+            if result.usage != nil && result.aiTitle != nil && result.modelId != nil { return result }
         }
         return result
     }
@@ -292,6 +296,23 @@ final class SessionEnricher: @unchecked Sendable {
             let cacheCreation = (usage["cache_creation_input_tokens"] as? Int) ?? 0
             let cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
             return input + cacheCreation + cacheRead
+        }
+        return nil
+    }
+
+    /// The model the session last answered with: `message.model` on the most
+    /// recent non-sidechain assistant line (sidechains run subagent models).
+    private static func latestModelId(in lines: [String]) -> String? {
+        for line in lines.reversed() {
+            guard let dict = decode(line) else { continue }
+            if let isSidechain = dict["isSidechain"] as? Bool, isSidechain {
+                continue
+            }
+            guard let message = dict["message"] as? [String: Any],
+                  let model = message["model"] as? String, !model.isEmpty else {
+                continue
+            }
+            return model
         }
         return nil
     }

@@ -336,6 +336,14 @@ struct SessionCard: View {
 
     private var bottomRow: some View {
         HStack(spacing: 8) {
+            if let model = display.modelName {
+                Text(model)
+                    .font(Theme.Fonts.meta)
+                    .foregroundStyle(Theme.Colors.onSurfaceVariant)
+                    .opacity(isIdle ? 0.6 : 1)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
             ContextBar(fraction: display.contextFraction, isStale: display.contextIsStale, isMuted: isIdle)
             if display.hadError {
                 Label("API error", systemImage: "exclamationmark.octagon.fill")
