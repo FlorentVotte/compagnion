@@ -454,20 +454,12 @@ final class SessionMonitor: ObservableObject {
         if let limits = statusline.rateLimits {
             let base = accountUsage ?? AccountUsage(measuredAt: Date())
             let merged = base.merging(
-                fiveHour: (limits.fiveHour?.usedPercentage, Self.parseDate(limits.fiveHour?.resetsAt)),
-                sevenDay: (limits.sevenDay?.usedPercentage, Self.parseDate(limits.sevenDay?.resetsAt))
+                fiveHour: (limits.fiveHour?.usedPercentage, limits.fiveHour?.resetsAt),
+                sevenDay: (limits.sevenDay?.usedPercentage, limits.sevenDay?.resetsAt)
             )
             accountUsage = merged
             merged.save()
         }
-    }
-
-    private static func parseDate(_ string: String?) -> Date? {
-        guard let string else { return nil }
-        let withFractional = ISO8601DateFormatter()
-        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = withFractional.date(from: string) { return date }
-        return ISO8601DateFormatter().date(from: string)
     }
 
     // MARK: - Jumping to the hosting app

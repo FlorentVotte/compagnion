@@ -112,7 +112,7 @@ enum IntegrationInstaller {
         }
 
         let currentStatusLine = settings["statusLine"] as? JSONObject
-        let statuslineForwarded = (currentStatusLine?["command"] as? String) == forwarderURL.path
+        let statuslineForwarded = isForwarderCommand(currentStatusLine?["command"] as? String)
 
         let hooksDisabled = (settings["disableAllHooks"] as? Bool) == true
             || (settings["allowManagedHooksOnly"] as? Bool) == true
@@ -249,9 +249,22 @@ enum IntegrationInstaller {
 
     // MARK: - Statusline
 
+    /// The `statusLine.command` value pointing at the forwarder. Claude Code
+    /// runs it through `sh -c`, and the path contains a space ("Application
+    /// Support") — unquoted, `sh` executes `/Users/…/Library/Application`
+    /// and the statusline silently never runs (exit 127).
+    static var forwarderCommand: String { shellSingleQuoted(forwarderURL.path) }
+
+    /// Matches both the current quoted form and the bare path written by
+    /// early installs (broken at runtime, but still ours to manage/replace).
+    private static func isForwarderCommand(_ command: String?) -> Bool {
+        guard let command else { return false }
+        return command == forwarderCommand || command == forwarderURL.path
+    }
+
     private static func installStatusline(into settings: inout JSONObject, port: UInt16) throws {
         let currentStatusLine = settings["statusLine"] as? JSONObject
-        let alreadyInstalled = (currentStatusLine?["command"] as? String) == forwarderURL.path
+        let alreadyInstalled = isForwarderCommand(currentStatusLine?["command"] as? String)
 
         let originalCommand: String?
         if alreadyInstalled {
@@ -274,8 +287,10 @@ enum IntegrationInstaller {
                 marker["statusLine"] = currentStatusLine
             }
             settings[statuslineMarkerKey] = marker
-            settings["statusLine"] = ["type": "command", "command": forwarderURL.path] as JSONObject
         }
+
+        // Always (re)written, so a legacy unquoted install self-heals.
+        settings["statusLine"] = ["type": "command", "command": forwarderCommand] as JSONObject
 
         try writeForwarderScript(port: port, originalCommand: originalCommand)
     }

@@ -25,8 +25,34 @@ struct StatuslineUpdate: Decodable, Sendable {
         let totalInputTokens: Int?
     }
     struct RateLimitWindow: Decodable, Sendable {
-        let usedPercentage: Double?
-        let resetsAt: String?      // ISO-8601
+        let usedPercentage: Double?   // 0–100 (the binary sends utilization*100)
+        let resetsAt: Date?
+
+        private enum CodingKeys: String, CodingKey {
+            case usedPercentage, resetsAt
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            usedPercentage = try? container.decode(Double.self, forKey: .usedPercentage)
+            // Verified in the 2.1.220 binary: `resets_at` is Unix epoch
+            // seconds (a JSON number). A string here would previously fail
+            // the decode of the ENTIRE statusline payload, dropping context
+            // and limits alike — so accept both shapes and never throw.
+            if let epoch = try? container.decode(Double.self, forKey: .resetsAt) {
+                resetsAt = Date(timeIntervalSince1970: epoch)
+            } else if let string = try? container.decode(String.self, forKey: .resetsAt) {
+                resetsAt = Self.parseISO(string)
+            } else {
+                resetsAt = nil
+            }
+        }
+
+        private static func parseISO(_ string: String) -> Date? {
+            let withFractional = ISO8601DateFormatter()
+            withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return withFractional.date(from: string) ?? ISO8601DateFormatter().date(from: string)
+        }
     }
     struct RateLimits: Decodable, Sendable {
         let fiveHour: RateLimitWindow?
