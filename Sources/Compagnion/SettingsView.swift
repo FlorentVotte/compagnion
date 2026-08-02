@@ -183,6 +183,20 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         Section {
+            HStack(spacing: 12) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 40, height: 40)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Self.appName)
+                        .font(.headline)
+                    Text("Menu-bar companion for Claude Code")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 2)
+
             LabeledContent("Version") {
                 Text(Self.versionString).textSelection(.enabled)
             }
@@ -202,6 +216,10 @@ struct SettingsView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private static var appName: String {
+        Bundle.main.infoDictionary?["CFBundleName"] as? String ?? "Compagnion"
     }
 
     /// "0.4.0 (4)" from the bundle; `swift run` has no Info.plist values.
