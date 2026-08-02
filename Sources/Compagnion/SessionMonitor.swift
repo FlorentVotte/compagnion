@@ -98,6 +98,9 @@ final class SessionMonitor: ObservableObject {
 
     var waitingCount: Int { displays.filter { $0.badge == .waiting }.count }
     var busyCount: Int { displays.filter { $0.badge == .working }.count }
+    /// Alive-but-idle sessions; finished background agents don't count as
+    /// idle — nothing will ever happen in them again.
+    var idleCount: Int { displays.filter { $0.badge == .idle && !$0.session.isFinished }.count }
 
     /// Raised the first time a session enters a waiting episode, so the
     /// notifier fires once per episode rather than once per poll.
@@ -119,9 +122,18 @@ final class SessionMonitor: ObservableObject {
     private var aiTitles: [String: String] = [:]
     private var contextUsage: [String: ContextUsage] = [:]
     private var subagentCounts: [String: Int] = [:]
-    private var waitingOverrides: Set<String> = []
+    /// Hook-reported waiting episodes, by session id, stamped when the hook
+    /// landed. Bridges the gap until the poll can confirm — see `rebuild`.
+    private var waitingOverrides: [String: Date] = [:]
     private var announcedWaiting: Set<String> = []
     private var pendingTools: [String: String] = [:]
+
+    /// How long a hook-set waiting override survives polls that disagree with
+    /// it. Must exceed one `eventedPollInterval` so at least one full poll —
+    /// started *after* the hook landed — gets to confirm before we conclude
+    /// the user answered without any hook firing (permission approvals emit
+    /// no hook; the next installed event is Stop, potentially minutes away).
+    private let waitingOverrideGrace: TimeInterval = 15
 
     /// Context-window size per session, as reported by the statusline — the
     /// only authoritative source. The last one seen is remembered globally so
@@ -228,7 +240,7 @@ final class SessionMonitor: ObservableObject {
         windowSizes = windowSizes.filter { liveIDs.contains($0.key) }
         subagentCounts = subagentCounts.filter { liveIDs.contains($0.key) }
         pendingTools = pendingTools.filter { liveIDs.contains($0.key) }
-        waitingOverrides.formIntersection(liveIDs)
+        waitingOverrides = waitingOverrides.filter { liveIDs.contains($0.key) }
         let vanished = announcedWaiting.subtracting(liveIDs)
         announcedWaiting.formIntersection(liveIDs)
         for id in vanished { onWaitingEpisodeEnd?(id) }
@@ -247,13 +259,23 @@ final class SessionMonitor: ObservableObject {
                 display.contextMeasuredAt = usage.measuredAt
             }
             display.subagentCount = subagentCounts[session.id] ?? 0
-            display.pendingToolName = pendingTools[session.id]
-            // The poll disagreeing with the hook means the episode is over.
+            // Reconcile hook overrides against this fresh poll. Poll agrees →
+            // the override has served its purpose. Poll disagrees → keep the
+            // override only while it's younger than the grace window (it may
+            // have landed while this poll was already in flight); past that,
+            // the user answered without any hook firing and the episode is
+            // over.
             if session.needsAttention {
-                display.waitingOverride = false
-            } else if waitingOverrides.contains(session.id) {
-                display.waitingOverride = true
+                waitingOverrides.removeValue(forKey: session.id)
+            } else if let overrideSetAt = waitingOverrides[session.id] {
+                if Date().timeIntervalSince(overrideSetAt) > waitingOverrideGrace {
+                    waitingOverrides.removeValue(forKey: session.id)
+                    pendingTools.removeValue(forKey: session.id)
+                } else {
+                    display.waitingOverride = true
+                }
             }
+            display.pendingToolName = pendingTools[session.id]
             return display
         }
 
@@ -360,11 +382,11 @@ final class SessionMonitor: ObservableObject {
         if let sessionId = hook.sessionId {
             switch kind {
             case .needsAttention:
-                waitingOverrides.insert(sessionId)
+                waitingOverrides[sessionId] = Date()
                 if let tool = hook.toolName, !tool.isEmpty { pendingTools[sessionId] = tool }
                 applyOverridesImmediately()
             case .turnFinished:
-                waitingOverrides.remove(sessionId)
+                waitingOverrides.removeValue(forKey: sessionId)
                 pendingTools[sessionId] = nil
                 applyOverridesImmediately()
                 if let display = displays.first(where: { $0.id == sessionId }) {
@@ -389,7 +411,7 @@ final class SessionMonitor: ObservableObject {
         var updated = displays
         for index in updated.indices {
             let id = updated[index].id
-            updated[index].waitingOverride = waitingOverrides.contains(id)
+            updated[index].waitingOverride = waitingOverrides[id] != nil
             updated[index].subagentCount = subagentCounts[id] ?? 0
             updated[index].pendingToolName = pendingTools[id]
         }
