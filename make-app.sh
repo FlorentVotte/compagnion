@@ -25,16 +25,23 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.2.0</string>
+    <key>CFBundleVersion</key>
+    <string>2</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
+    <!-- Tab-level focus in Terminal/iTerm2 is driven by AppleScript. -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Compagnion focuses the terminal tab running the Claude Code session you clicked.</string>
 </dict>
 </plist>
 EOF
 
-codesign --force --sign - "$APP"
+# UNUserNotificationCenter refuses to register for an unsigned bundle, and
+# ad-hoc signatures only stick when the bundle is signed as a whole, last.
+codesign --force --deep --sign - "$APP"
 
 echo "Built $PWD/$APP"
 echo "Run it:            open $APP"
