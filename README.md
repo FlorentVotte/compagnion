@@ -37,6 +37,38 @@ open Compagnion.app
 Add `Compagnion.app` to **System Settings → General → Login Items** to start
 it automatically.
 
+The bundle icon is checked in at `Resources/Compagnion.icns`; regenerate it
+with `swift Resources/make-icon.swift` after changing the design.
+
+## Distribution
+
+```sh
+./release.sh         # universal, Developer ID signed, notarized, stapled DMG
+DRY_RUN=1 ./release.sh   # everything except the Apple round-trips
+```
+
+Output lands in `dist/Compagnion-<version>.dmg`, ready to attach to a GitHub
+release. Both the app and the DMG are notarized and stapled, so the app
+validates offline once dragged out of the image.
+
+One-time setup (paid Apple Developer membership required):
+
+1. A **Developer ID Application** certificate in the login keychain — Xcode →
+   Settings → Accounts → Manage Certificates → + . An "Apple Development"
+   certificate cannot sign for distribution.
+2. Notary credentials, using an [app-specific
+   password](https://account.apple.com):
+
+   ```sh
+   xcrun notarytool store-credentials compagnion \
+       --apple-id <apple-id> --team-id <team-id> --password <app-specific-password>
+   ```
+
+Release builds run under the hardened runtime, which blocks Apple Events
+unless `Resources/Compagnion.entitlements` grants them — without that, focusing
+a terminal tab fails in release builds only. `make-app.sh` applies the same
+runtime and entitlements to local ad-hoc builds so the two behave alike.
+
 ## Requirements
 
 - macOS 14+
