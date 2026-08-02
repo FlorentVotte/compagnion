@@ -11,9 +11,7 @@ struct RingGauge: View {
 
     private var strokeColor: Color {
         guard let progress else { return Theme.Colors.outline }
-        if progress >= 0.90 { return Theme.Colors.error }
-        if progress >= 0.75 { return Theme.Colors.waiting }
-        return Theme.Colors.primary
+        return Theme.quotaColor(for: progress)
     }
 
     private var valueLabel: String {

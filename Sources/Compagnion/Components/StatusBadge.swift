@@ -31,13 +31,20 @@ struct StatusBadge: View {
 
     var body: some View {
         Text(text)
+            // "WAITING FOR YOU" wraps to two lines in the design, which is
+            // what keeps the card's left column wide enough for a real
+            // branch name.
+            .multilineTextAlignment(.trailing)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: badge == .waiting ? 76 : nil, alignment: .trailing)
             .font(Theme.Fonts.badge)
             .foregroundStyle(color)
             .padding(.horizontal, badge == .waiting ? 6 : 0)
             .padding(.vertical, badge == .waiting ? 2 : 0)
             .background {
                 if badge == .waiting {
-                    Capsule().fill(Color.orange.opacity(0.15))
+                    // `rounded`, not `rounded-full` — a chip, not a pill.
+                    RoundedRectangle(cornerRadius: 4).fill(Theme.Colors.waitingChip)
                 }
             }
     }

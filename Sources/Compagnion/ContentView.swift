@@ -189,6 +189,7 @@ struct SessionCard: View {
                 }
                 pathLine
             }
+            .layoutPriority(1)
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 4) {
                 StatusBadge(badge: display.badge)
@@ -196,9 +197,9 @@ struct SessionCard: View {
                     Text(elapsed)
                         .font(Theme.Fonts.mono)
                         .foregroundStyle(Theme.Colors.onSurfaceVariant)
+                        .fixedSize()
                 }
             }
-            .fixedSize(horizontal: true, vertical: false)
         }
     }
 
@@ -219,7 +220,7 @@ struct SessionCard: View {
 
     private var bottomRow: some View {
         HStack(spacing: 8) {
-            ContextBar(fraction: display.contextFraction, isStale: display.contextIsStale)
+            ContextBar(fraction: display.contextFraction, isStale: display.contextIsStale, isMuted: isIdle)
             Spacer(minLength: 8)
             if isHovering {
                 Image(systemName: "terminal")
