@@ -13,6 +13,29 @@ struct HookEvent: Decodable, Sendable {
     let toolName: String?          // "tool_name"
     let message: String?           // present on Notification events
     let notificationType: String?  // "notification_type" if present
+    let lastAssistantMessage: String?  // Stop / SubagentStop
+
+    /// One-line summary of `tool_input` (command / file_path / url…) —
+    /// derived after decoding, not a payload field.
+    var toolInputSummary: String?
+
+    enum CodingKeys: String, CodingKey {
+        case hookEventName, sessionId, transcriptPath, cwd, toolName, message,
+             notificationType, lastAssistantMessage
+    }
+}
+
+/// Mirrors Claude Code's own permission-prompt heuristic (verified in the
+/// binary): summarize a tool call by its command, file path, or URL.
+private func toolInputSummary(from value: Any?) -> String? {
+    guard let input = value as? [String: Any] else { return nil }
+    let candidate = (input["command"] as? String)
+        ?? (input["file_path"] as? String)
+        ?? (input["url"] as? String)
+        ?? (input["prompt"] as? String)
+    guard let raw = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+    let oneLine = raw.components(separatedBy: .newlines).joined(separator: " ")
+    return oneLine.count > 160 ? String(oneLine.prefix(160)) + "…" : oneLine
 }
 
 /// One statusline refresh forwarded by the user's `statusLine` command
@@ -103,10 +126,11 @@ private func decodeCompagnionEvent(_ body: Data) -> CompagnionEvent? {
     decoder.keyDecodingStrategy = .convertFromSnakeCase
 
     if object["hook_event_name"] != nil {
-        guard let hook = try? decoder.decode(HookEvent.self, from: body) else {
+        guard var hook = try? decoder.decode(HookEvent.self, from: body) else {
             log("failed to decode HookEvent")
             return nil
         }
+        hook.toolInputSummary = toolInputSummary(from: object["tool_input"])
         return .hook(hook)
     }
 
@@ -199,6 +223,25 @@ private final class RequestState: @unchecked Sendable {
     var finished = false
 }
 
+/// Fires its send closure at most once, from whichever of the racing paths
+/// (user decision, hold timeout, backstop) gets there first.
+final class OnceResponder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var send: ((Data) -> Void)?
+
+    init(_ send: @escaping (Data) -> Void) {
+        self.send = send
+    }
+
+    func respond(_ body: Data) {
+        lock.lock()
+        let pending = send
+        send = nil
+        lock.unlock()
+        pending?(body)
+    }
+}
+
 /// Tiny local HTTP listener for Claude Code hook events and statusline
 /// updates. Binds `127.0.0.1` only, speaks just enough HTTP/1.1 to accept
 /// `POST /event` and reject everything else. Never blocks a socket on
@@ -213,6 +256,17 @@ final class EventListener: ObservableObject {
 
     /// Always invoked on the main actor.
     var onEvent: ((CompagnionEvent) -> Void)?
+
+    /// Decision hook for `PermissionRequest` events: invoked on the main
+    /// actor with a one-shot responder. The consumer MUST eventually call it
+    /// (a backstop fires the inert `{}` after `approvalBackstopSeconds`
+    /// regardless, so the socket can never dangle). When unset, requests are
+    /// answered inertly right away.
+    var onPermissionDecision: ((HookEvent, @escaping @Sendable (Data) -> Void) -> Void)?
+
+    /// Just under the 65 s hook timeout the installer configures for
+    /// `PermissionRequest`, and above the 60 s hold used by the monitor.
+    nonisolated static let approvalBackstopSeconds: TimeInterval = 62
 
     private var listener: NWListener?
     private var hasRetriedAfterFailure = false
@@ -361,11 +415,10 @@ final class EventListener: ObservableObject {
             return
         }
 
-        // Respond immediately/independently of dispatching the event —
-        // never let a slow consumer hold the socket open.
-        respond(connection, status: "200 OK", body: Data("{}".utf8))
-
-        guard let event = decodeCompagnionEvent(request.body) else { return }
+        guard let event = decodeCompagnionEvent(request.body) else {
+            respond(connection, status: "200 OK", body: Data("{}".utf8))
+            return
+        }
         // Log the success path too: without this, "nothing in the log" is
         // ambiguous between "no events arriving" and "everything working",
         // which is exactly the wrong thing to be unsure about while
@@ -376,6 +429,33 @@ final class EventListener: ObservableObject {
         case .statusline(let update):
             log("statusline session=\(update.sessionId ?? "?") context=\(update.contextWindow?.usedPercentage.map { "\($0)%" } ?? "-") limits=\(update.rateLimits != nil)")
         }
+
+        // PermissionRequest is the one event whose response may carry a
+        // decision (remote Allow/Deny) — hold the socket while the main
+        // actor decides. `OnceResponder` + the backstop guarantee exactly
+        // one answer, even if the consumer never calls back.
+        if case .hook(let hook) = event, hook.hookEventName == "PermissionRequest" {
+            let responder = OnceResponder { [weak self] body in
+                self?.respond(connection, status: "200 OK", body: body)
+            }
+            queue.asyncAfter(deadline: .now() + Self.approvalBackstopSeconds) {
+                responder.respond(Data("{}".utf8))
+            }
+            Task { @MainActor in
+                self.lastEventAt = Date()
+                if let decide = self.onPermissionDecision {
+                    decide(hook) { body in responder.respond(body) }
+                } else {
+                    responder.respond(Data("{}".utf8))
+                }
+                self.onEvent?(event)
+            }
+            return
+        }
+
+        // Everything else: respond immediately/independently of dispatching
+        // the event — never let a slow consumer hold the socket open.
+        respond(connection, status: "200 OK", body: Data("{}".utf8))
         Task { @MainActor in
             self.lastEventAt = Date()
             self.onEvent?(event)

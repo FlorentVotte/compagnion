@@ -8,6 +8,8 @@ struct SettingsView: View {
     @AppStorage(SettingsKeys.notifyWaiting) private var notifyWaiting = true
     @AppStorage(SettingsKeys.notifyTurnFinished) private var notifyTurnFinished = false
     @AppStorage(SettingsKeys.notifySubagentFinished) private var notifySubagentFinished = false
+    @AppStorage(SettingsKeys.notifyError) private var notifyError = true
+    @AppStorage(SettingsKeys.remoteApproval) private var remoteApproval = false
 
     @State private var report: IntegrationReport?
     @State private var busy = false
@@ -24,11 +26,27 @@ struct SettingsView: View {
         Form {
             integrationSection
             notificationsSection
+            approvalSection
             generalSection
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 460)
+        .frame(width: 460, height: 560)
         .task { refreshReport() }
+    }
+
+    // MARK: - Remote approval
+
+    private var approvalSection: some View {
+        Section {
+            Toggle("Allow and deny permission requests from Compagnion", isOn: $remoteApproval)
+                .onChange(of: remoteApproval) { _, enabled in requestAuthorization(if: enabled) }
+        } header: {
+            Text("Remote approval")
+        } footer: {
+            Text("Off by default. When enabled, a permission request in a session whose terminal is NOT the frontmost app is held for up to 60 seconds so you can Allow or Deny it from the notification or the panel; otherwise (or on timeout) the normal terminal prompt appears. Every remote decision is recorded in ~/Library/Application Support/Compagnion/approvals.jsonl.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
     }
 
     // MARK: - Integration
@@ -135,10 +153,12 @@ struct SettingsView: View {
 
             Toggle("A session is waiting for you", isOn: $notifyWaiting)
             Toggle("A session finished its turn", isOn: $notifyTurnFinished)
+            Toggle("A session hit an API error", isOn: $notifyError)
             Toggle("A sub-agent finished", isOn: $notifySubagentFinished)
         }
         .onChange(of: notifyWaiting) { _, enabled in requestAuthorization(if: enabled) }
         .onChange(of: notifyTurnFinished) { _, enabled in requestAuthorization(if: enabled) }
+        .onChange(of: notifyError) { _, enabled in requestAuthorization(if: enabled) }
         .onChange(of: notifySubagentFinished) { _, enabled in requestAuthorization(if: enabled) }
     }
 
