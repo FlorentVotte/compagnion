@@ -195,6 +195,14 @@ final class Notifier: NSObject, ObservableObject {
     }
 
     private func deliver(center: UNUserNotificationCenter, identifier: String, title: String, body: String, sessionId: String) {
+        // "Waiting" notifications are on by default, but macOS only shows the
+        // permission prompt when we ask. Nobody has necessarily opened
+        // Settings, so ask the first time we actually have something to say —
+        // and deliver anyway: if the user allows, the request lands.
+        if authorization == .notDetermined {
+            Task { await requestAuthorizationIfNeeded() }
+        }
+
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
