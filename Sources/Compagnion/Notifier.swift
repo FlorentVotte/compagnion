@@ -95,7 +95,9 @@ final class Notifier: NSObject, ObservableObject {
             intentIdentifiers: [],
             options: []
         )
-        let allowAction = UNNotificationAction(identifier: Self.allowActionIdentifier, title: "Allow", options: [])
+        // .authenticationRequired: an Allow tapped on a locked Mac must not
+        // approve a tool call — the device has to be unlocked first.
+        let allowAction = UNNotificationAction(identifier: Self.allowActionIdentifier, title: "Allow", options: [.authenticationRequired])
         let denyAction = UNNotificationAction(identifier: Self.denyActionIdentifier, title: "Deny", options: [.destructive])
         let approvalCategory = UNNotificationCategory(
             identifier: Self.approvalCategoryIdentifier,

@@ -44,6 +44,20 @@ final class AppModel: ObservableObject {
         }
         self.monitor = monitor
         self.notifier = notifier
+
+        // Dev harness: COMPAGNION_PREVIEW=1 shows the panel in a regular
+        // window so UI work can be screenshotted/iterated without clicking
+        // the status item. Inert in normal launches.
+        if ProcessInfo.processInfo.environment["COMPAGNION_PREVIEW"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [monitor] in
+                let host = NSHostingController(rootView: ContentView(monitor: monitor))
+                let window = NSWindow(contentViewController: host)
+                window.title = "PanelPreview"
+                window.setFrameOrigin(NSPoint(x: 100, y: 150))
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
     }
 }
 
@@ -84,14 +98,13 @@ struct CompagnionApp: App {
 }
 
 /// Status-bar label: one compact segment per session state — waiting
-/// (orange, most urgent, leftmost), working (blue), idle (gray) — each with
-/// its count. Zero-count segments are omitted entirely.
+/// (most urgent, leftmost), working, idle — each with its count.
+/// Zero-count segments are omitted entirely.
 ///
-/// Rendered to a non-template `NSImage` via `ImageRenderer`: the menu bar
-/// template-renders SwiftUI label content to monochrome, which would erase
-/// the state colors that make the segments readable at a glance. The fixed
-/// colors are mid-tone on purpose — legible against both the light and dark
-/// menu bar, which a pre-rendered image can't adapt to.
+/// Rendered to a *template* `NSImage` via `ImageRenderer`: the menu bar
+/// tints template images itself (white on a dark bar, near-black on a light
+/// one), which fixed colors can't match for legibility. States are told
+/// apart by their icons and ordering, not by color.
 struct MenuBarLabel: View {
     @ObservedObject var monitor: SessionMonitor
 
@@ -108,7 +121,7 @@ struct MenuBarLabel: View {
         ))
         renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
         guard let image = renderer.nsImage else { return NSImage() }
-        image.isTemplate = false
+        image.isTemplate = true
         return image
     }
 
@@ -126,44 +139,43 @@ private struct MenuBarSegments: View {
     let idle: Int
     let quotaCritical: Bool
 
-    private static let waitingColor = Color(red: 0.92, green: 0.45, blue: 0.09)
-    private static let workingColor = Color(red: 0.25, green: 0.52, blue: 0.95)
-    private static let idleColor = Color(red: 0.56, green: 0.56, blue: 0.58)
-
     var body: some View {
+        // Solid black at varying opacity: template rendering keeps only the
+        // alpha channel, so opacity is the one dimension that survives —
+        // idle sessions recede, the rest stay at full strength.
         HStack(spacing: 8) {
             if waiting > 0 {
-                segment("exclamationmark.circle.fill", waiting, Self.waitingColor)
+                segment("exclamationmark.circle.fill", waiting, opacity: 1)
             }
             if working > 0 {
-                segment("asterisk.circle.fill", working, Self.workingColor)
+                segment("asterisk.circle.fill", working, opacity: 1)
             }
             if idle > 0 {
-                segment("moon.zzz", idle, Self.idleColor)
+                segment("moon.zzz", idle, opacity: 0.55)
             }
             if quotaCritical {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Self.waitingColor)
+                    .foregroundStyle(.black)
             }
             if waiting == 0 && working == 0 && idle == 0 && !quotaCritical {
                 Image(systemName: "asterisk.circle")
                     .font(.system(size: 13))
-                    .foregroundStyle(Self.idleColor.opacity(0.8))
+                    .foregroundStyle(.black.opacity(0.45))
             }
         }
         .padding(.horizontal, 1)
         .fixedSize()
     }
 
-    private func segment(_ systemName: String, _ count: Int, _ color: Color) -> some View {
+    private func segment(_ systemName: String, _ count: Int, opacity: Double) -> some View {
         HStack(spacing: 2.5) {
             Image(systemName: systemName)
                 .font(.system(size: 12.5, weight: .semibold))
             Text("\(count)")
                 .font(.system(size: 11.5, weight: .semibold, design: .rounded))
         }
-        .foregroundStyle(color)
+        .foregroundStyle(.black.opacity(opacity))
     }
 }
 

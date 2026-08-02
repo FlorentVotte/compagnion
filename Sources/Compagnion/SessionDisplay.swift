@@ -108,8 +108,11 @@ struct SessionDisplay: Identifiable, Equatable {
     }
 
     /// "14m elapsed" while active, "45m ago" once idle — matches the design.
+    /// Non-numeric labels ("just started") read fine on their own and get no
+    /// suffix.
     var elapsedLabel: String? {
         guard let raw = session.elapsedLabel else { return nil }
+        guard raw.first?.isNumber == true else { return raw }
         return badge == .idle ? "\(raw) ago" : "\(raw) elapsed"
     }
 

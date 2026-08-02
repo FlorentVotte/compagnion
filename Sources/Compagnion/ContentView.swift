@@ -7,6 +7,17 @@ struct ContentView: View {
 
     @AppStorage(SettingsKeys.notifyWaiting) private var notifyWaiting = true
 
+    /// Measured card heights keyed by session id — cards vary in height
+    /// (question/approval rows), so the 2.5-card cap uses real sizes. Keyed
+    /// by id, not row index: the list reorders and changes while the panel
+    /// is closed, and index-keyed heights would go stale.
+    @State private var cardHeights: [String: CGFloat] = [:]
+    /// Full height of the list content (cards + padding), measured so the
+    /// ScrollView can be given an exact height. A ScrollView's ideal height
+    /// is zero — `.frame(maxHeight:)` alone collapses it in contexts that
+    /// propose nothing, like a window sized to its content.
+    @State private var listContentHeight: CGFloat?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -65,9 +76,18 @@ struct ContentView: View {
             emptyState
         } else {
             ScrollView {
-                LazyVStack(spacing: 8) {
+                // A plain VStack on purpose: the 2.5-card cap needs every
+                // card measured. A LazyVStack under a small cap never
+                // materializes the rows below the fold, so their heights
+                // could never be measured and the cap could never recover.
+                VStack(spacing: 8) {
                     ForEach(Array(monitor.displays.enumerated()), id: \.element.id) { index, display in
                         SessionCard(display: display, monitor: monitor)
+                            .onGeometryChange(for: CGFloat.self) { proxy in
+                                proxy.size.height
+                            } action: { height in
+                                cardHeights[display.id] = height
+                            }
                         if needsDividerAfter(index) {
                             Rectangle()
                                 .fill(Theme.Colors.hairline)
@@ -79,10 +99,35 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.height
+                } action: { height in
+                    listContentHeight = height
+                }
             }
             .scrollIndicators(.automatic)
-            .frame(maxHeight: 420)
+            .frame(height: resolvedListHeight)
         }
+    }
+
+    /// Exact list height: the content when it fits, the 2.5-card cap when it
+    /// doesn't. `nil` (no constraint) only before the first measurement.
+    private var resolvedListHeight: CGFloat? {
+        guard let listContentHeight else { return nil }
+        return min(listContentHeight, listCapHeight)
+    }
+
+    /// Caps the list at 2.5 cards: two full cards plus half of the third,
+    /// so a cut-off card signals there is more to scroll. With two or fewer
+    /// sessions the list fits its content (the cap is never reached).
+    private var listCapHeight: CGFloat {
+        let displays = monitor.displays
+        guard displays.count > 2 else { return Theme.Metrics.maxListHeight }
+        let heights = displays.prefix(3).compactMap { cardHeights[$0.id] }
+        guard heights.count == 3 else { return Theme.Metrics.maxListHeight }
+        let topPadding: CGFloat = 12
+        let rowSpacing: CGFloat = 8
+        return topPadding + heights[0] + rowSpacing + heights[1] + rowSpacing + heights[2] / 2
     }
 
     /// Hairline between the "waiting for you" group and everything else.
