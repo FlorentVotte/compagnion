@@ -322,6 +322,16 @@ final class EventListener: ObservableObject {
         respond(connection, status: "200 OK", body: Data("{}".utf8))
 
         guard let event = decodeCompagnionEvent(request.body) else { return }
+        // Log the success path too: without this, "nothing in the log" is
+        // ambiguous between "no events arriving" and "everything working",
+        // which is exactly the wrong thing to be unsure about while
+        // debugging an integration.
+        switch event {
+        case .hook(let hook):
+            log("hook \(hook.hookEventName) session=\(hook.sessionId ?? "?") tool=\(hook.toolName ?? "-")")
+        case .statusline(let update):
+            log("statusline session=\(update.sessionId ?? "?") context=\(update.contextWindow?.usedPercentage.map { "\($0)%" } ?? "-") limits=\(update.rateLimits != nil)")
+        }
         Task { @MainActor in
             self.lastEventAt = Date()
             self.onEvent?(event)
