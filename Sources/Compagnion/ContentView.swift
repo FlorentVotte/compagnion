@@ -3,168 +3,305 @@ import AppKit
 
 struct ContentView: View {
     @ObservedObject var monitor: SessionMonitor
+    var onOpenSettings: () -> Void = {}
+
+    @AppStorage(SettingsKeys.notifyWaiting) private var notifyWaiting = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            Divider()
-            if monitor.sessions.isEmpty {
-                emptyState
-            } else {
-                ScrollView {
-                    VStack(spacing: 2) {
-                        ForEach(monitor.sessions) { session in
-                            SessionRow(session: session)
-                        }
-                    }
-                    .padding(6)
-                }
-                .frame(maxHeight: 380)
-            }
-            Divider()
+            sessionList
             footer
         }
-        .frame(width: 340)
+        .frame(width: Theme.Metrics.panelWidth)
+        .glassBackground()
+        // The design is a light panel; it must stay legible under a dark
+        // menu bar, so the panel does not follow the system appearance.
+        .environment(\.colorScheme, .light)
     }
 
+    // MARK: - Header
+
     private var header: some View {
-        HStack {
-            Text("Claude Sessions")
-                .font(.headline)
-            Spacer()
-            if monitor.waitingCount > 0 {
-                Label("\(monitor.waitingCount)", systemImage: "exclamationmark.circle.fill")
-                    .foregroundStyle(.orange)
-                    .font(.callout.weight(.semibold))
-                    .help("Sessions waiting for you")
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Compagnion")
+                    .font(Theme.Fonts.headline)
+                    .foregroundStyle(Theme.Colors.onSurface)
+                HStack(spacing: 4) {
+                    Image(systemName: "bell.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(notifyWaiting ? Theme.Colors.primary : Theme.Colors.outline)
+                    Text(notifyWaiting ? "Alerts ON" : "Alerts OFF")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Theme.Colors.onSurfaceVariant)
+                }
             }
-            if monitor.busyCount > 0 {
-                Label("\(monitor.busyCount)", systemImage: "asterisk")
-                    .foregroundStyle(.blue)
-                    .font(.callout)
-                    .help("Sessions working")
+            Spacer()
+            HStack(spacing: 12) {
+                RingGauge(
+                    progress: monitor.accountUsage?.fiveHourFraction,
+                    caption: "5h Rem.",
+                    tooltip: monitor.accountUsage?.fiveHourTooltip ?? AccountUsage.unavailableTooltip,
+                    isStale: monitor.accountUsage?.isStale ?? false
+                )
+                RingGauge(
+                    progress: monitor.accountUsage?.sevenDayFraction,
+                    caption: "Week",
+                    tooltip: monitor.accountUsage?.sevenDayTooltip ?? AccountUsage.unavailableTooltip,
+                    isStale: monitor.accountUsage?.isStale ?? false
+                )
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    // MARK: - Session list
+
+    @ViewBuilder
+    private var sessionList: some View {
+        if monitor.displays.isEmpty {
+            emptyState
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(Array(monitor.displays.enumerated()), id: \.element.id) { index, display in
+                        SessionCard(display: display, monitor: monitor)
+                        if needsDividerAfter(index) {
+                            Rectangle()
+                                .fill(Theme.Colors.hairline)
+                                .frame(height: 0.5)
+                                .opacity(0.5)
+                                .padding(.horizontal, 12)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .scrollIndicators(.automatic)
+            .frame(maxHeight: 420)
+        }
+    }
+
+    /// Hairline between the "waiting for you" group and everything else.
+    private func needsDividerAfter(_ index: Int) -> Bool {
+        let displays = monitor.displays
+        guard index < displays.count - 1 else { return false }
+        return displays[index].badge == .waiting && displays[index + 1].badge != .waiting
     }
 
     private var emptyState: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
             Image(systemName: "moon.zzz")
-                .font(.title2)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 20))
+                .foregroundStyle(Theme.Colors.outline)
             Text(monitor.lastError ?? "No active Claude Code session")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(Theme.Fonts.body)
+                .foregroundStyle(Theme.Colors.onSurfaceVariant)
                 .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
+        .padding(.vertical, 32)
     }
+
+    // MARK: - Footer
 
     private var footer: some View {
         HStack {
-            if let error = monitor.lastError, !monitor.sessions.isEmpty {
-                Image(systemName: "wifi.exclamationmark")
-                    .foregroundStyle(.orange)
-                    .help(error)
-            } else if let updated = monitor.lastUpdated {
-                Text("Updated \(updated, style: .time)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
+            Text(refreshLabel)
+                .font(Theme.Fonts.meta)
+                .foregroundStyle(Theme.Colors.onSurfaceVariant)
+                .help(ifPresent: monitor.lastError)
             Spacer()
-            Button {
-                monitor.refresh()
-            } label: {
-                Image(systemName: "arrow.clockwise")
+            HStack(spacing: 8) {
+                FooterButton(systemImage: "arrow.clockwise", help: "Refresh now") {
+                    monitor.refresh()
+                }
+                FooterButton(systemImage: "gearshape", help: "Settings") {
+                    onOpenSettings()
+                }
+                FooterButton(systemImage: "power", help: "Quit Compagnion", isDestructive: true) {
+                    NSApplication.shared.terminate(nil)
+                }
             }
-            .buttonStyle(.borderless)
-            .help("Refresh now")
-            Button {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-            }
-            .buttonStyle(.borderless)
-            .help("Quit Compagnion")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Theme.Colors.outlineVariant.opacity(0.3))
+                .frame(height: 1)
+        }
+    }
+
+    private var refreshLabel: String {
+        if monitor.lastError != nil, monitor.displays.isEmpty == false {
+            return "Refresh failed — showing last known state"
+        }
+        guard let updated = monitor.lastUpdated else { return "Never refreshed" }
+        let minutes = Int(Date().timeIntervalSince(updated) / 60)
+        return minutes < 1 ? "Last refresh: Just now" : "Last refresh: \(minutes)m ago"
     }
 }
 
-struct SessionRow: View {
-    let session: ClaudeSession
-    @State private var isHovering = false
-    @State private var justCopied = false
+// MARK: - Session card
 
-    private var statusColor: Color {
-        if session.needsAttention { return .orange }
-        if session.isBusy { return .blue }
-        if session.isFinished { return .secondary.opacity(0.5) }
-        return .green
-    }
+struct SessionCard: View {
+    let display: SessionDisplay
+    @ObservedObject var monitor: SessionMonitor
+
+    @State private var isHovering = false
+
+    private var session: ClaudeSession { display.session }
+    private var isWaiting: Bool { display.badge == .waiting }
+    private var isIdle: Bool { display.badge == .idle }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 8, height: 8)
-                .padding(.top, 5)
+        VStack(alignment: .leading, spacing: 8) {
+            topRow
+            bottomRow
+        }
+        .padding(Theme.Metrics.cardPadding)
+        .background(cardBackground)
+        .contentShape(Rectangle())
+        .scaleEffect(isHovering ? 1 : 1)
+        .onHover { isHovering = $0 }
+        .onTapGesture { monitor.activate(display) }
+        .contextMenu { contextMenu }
+        .help(display.tooltip)
+    }
 
+    private var topRow: some View {
+        HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(session.displayName)
-                        .font(.callout.weight(.medium))
+                        .font(Theme.Fonts.headline)
+                        .foregroundStyle(Theme.Colors.onSurface)
+                        .opacity(isIdle ? 0.6 : 1)
                         .lineLimit(1)
-                    if session.kind == "background" {
-                        Text("bg")
-                            .font(.caption2)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(.quaternary, in: Capsule())
-                    }
-                    Spacer()
-                    if let elapsed = session.elapsedLabel {
-                        Text(elapsed)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                    if display.badge == .working {
+                        PulsingIndicator()
                     }
                 }
-                Text(session.statusLabel)
-                    .font(.caption)
-                    .foregroundStyle(session.needsAttention ? .orange : .secondary)
-                    .lineLimit(1)
-                Text(session.folderLabel)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
+                pathLine
             }
-
-            if isHovering {
-                Button {
-                    let pasteboard = NSPasteboard.general
-                    pasteboard.clearContents()
-                    pasteboard.setString(session.resumeCommand, forType: .string)
-                    justCopied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { justCopied = false }
-                } label: {
-                    Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
-                        .font(.caption)
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 4) {
+                StatusBadge(badge: display.badge)
+                if let elapsed = display.elapsedLabel {
+                    Text(elapsed)
+                        .font(Theme.Fonts.mono)
+                        .foregroundStyle(Theme.Colors.onSurfaceVariant)
                 }
-                .buttonStyle(.borderless)
-                .help("Copy command to open this session: \(session.resumeCommand)")
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private var pathLine: some View {
+        HStack(spacing: 4) {
+            Text(display.folderName)
+            if let branch = display.gitBranch, !branch.isEmpty {
+                Text("/").foregroundStyle(Theme.Colors.outlineVariant)
+                Text(branch)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(isHovering ? Color.primary.opacity(0.06) : .clear)
-        )
+        .font(Theme.Fonts.mono)
+        .foregroundStyle(Theme.Colors.onSurfaceVariant)
+        .opacity(isIdle ? 0.6 : 1)
+        .lineLimit(1)
+        .truncationMode(.middle)
+    }
+
+    private var bottomRow: some View {
+        HStack(spacing: 8) {
+            ContextBar(fraction: display.contextFraction, isStale: display.contextIsStale)
+            Spacer(minLength: 8)
+            if isHovering {
+                Image(systemName: "terminal")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.Colors.primary)
+                    .transition(.opacity)
+                    .help(monitor.jumpHelp(for: display))
+            }
+            if display.subagentCount > 0 {
+                SubAgentPill(count: display.subagentCount)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: isHovering)
+    }
+
+    @ViewBuilder
+    private var cardBackground: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.Metrics.cardCornerRadius)
+        if isWaiting {
+            shape
+                .fill(isHovering ? Color.orange.opacity(0.16) : Theme.Colors.waitingBackground)
+                .overlay(shape.stroke(Theme.Colors.waitingBorder, lineWidth: 1))
+        } else {
+            shape.fill(isHovering ? Theme.Colors.secondaryContainer.opacity(0.5) : .clear)
+        }
+    }
+
+    @ViewBuilder
+    private var contextMenu: some View {
+        Button("Open in \(monitor.hostAppName(for: display) ?? "terminal")") {
+            monitor.activate(display)
+        }
+        Button("Copy resume command") {
+            copy(session.resumeCommand)
+        }
+        Button("Reveal folder in Finder") {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: session.cwd)
+        }
+    }
+
+    private func copy(_ string: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(string, forType: .string)
+    }
+}
+
+// MARK: - Footer button
+
+struct FooterButton: View {
+    let systemImage: String
+    let help: String
+    var isDestructive = false
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14))
+                .foregroundStyle(foreground)
+                .frame(width: Theme.Metrics.footerButtonSize, height: Theme.Metrics.footerButtonSize)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(background)
+                )
+        }
+        .buttonStyle(.plain)
         .onHover { isHovering = $0 }
+        .help(help)
+    }
+
+    private var foreground: Color {
+        guard isHovering else { return Theme.Colors.onSurfaceVariant }
+        return isDestructive ? Theme.Colors.error : Theme.Colors.primary
+    }
+
+    private var background: Color {
+        guard isHovering else { return .clear }
+        return isDestructive
+            ? Theme.Colors.errorContainer.opacity(0.5)
+            : Theme.Colors.secondaryContainer.opacity(0.5)
     }
 }
