@@ -187,9 +187,33 @@ enum IntegrationInstaller {
 
         uninstallStatusline(from: &settings)
 
-        try writeSettings(settings, to: settingsURL)
+        if !restoreVerbatimBackup(matching: settings, settingsURL: settingsURL) {
+            try writeSettings(settings, to: settingsURL)
+        }
         try? FileManager.default.removeItem(at: forwarderURL)
         pruneOldBackups(settingsURL: settingsURL)
+    }
+
+    /// Re-serializing loses the user's own formatting: `JSONSerialization`
+    /// sorts keys and re-indents, so an install/uninstall cycle would leave a
+    /// large, purely cosmetic diff in a file we promised to leave alone.
+    /// When a backup parses to exactly the content we're about to write, copy
+    /// its bytes instead — that is the user's file, character for character.
+    private static func restoreVerbatimBackup(matching settings: JSONObject, settingsURL: URL) -> Bool {
+        let target = settings as NSDictionary
+        for backup in allBackups(settingsURL: settingsURL) {
+            guard let data = try? Data(contentsOf: backup),
+                  let parsed = try? JSONSerialization.jsonObject(with: data) as? JSONObject,
+                  target.isEqual(parsed as NSDictionary)
+            else { continue }
+            do {
+                try data.write(to: settingsURL, options: .atomic)
+                return true
+            } catch {
+                return false
+            }
+        }
+        return false
     }
 
     // MARK: - Hook merging
