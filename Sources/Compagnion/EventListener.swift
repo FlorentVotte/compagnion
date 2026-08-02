@@ -128,30 +128,41 @@ private func headerValue(named name: String, in lines: [Substring]) -> String? {
     return nil
 }
 
-/// Attempts to parse a complete HTTP request out of the bytes accumulated so
-/// far. Returns nil when more bytes are needed (headers not yet terminated,
-/// or body not yet fully arrived) — the caller keeps reading in that case.
-private func parseHTTPRequest(_ buffer: Data) -> ParsedRequest? {
-    guard let terminatorRange = buffer.range(of: Data("\r\n\r\n".utf8)) else { return nil }
+/// Outcome of trying to parse the bytes accumulated so far.
+private enum ParseOutcome {
+    /// More bytes are needed (headers not yet terminated, or body not yet
+    /// fully arrived) — the caller keeps reading.
+    case incomplete
+    /// The request can never become valid (malformed request line, non-UTF-8
+    /// headers, negative or oversized Content-Length) — answer 400 and close.
+    case invalid
+    case request(ParsedRequest)
+}
+
+private func parseHTTPRequest(_ buffer: Data) -> ParseOutcome {
+    guard let terminatorRange = buffer.range(of: Data("\r\n\r\n".utf8)) else { return .incomplete }
     guard let headerText = String(data: buffer[..<terminatorRange.lowerBound], encoding: .utf8) else {
-        return nil
+        return .invalid
     }
 
     let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
-    guard let requestLine = lines.first else { return nil }
+    guard let requestLine = lines.first else { return .invalid }
     let requestParts = requestLine.split(separator: " ")
-    guard requestParts.count >= 2 else { return nil }
+    guard requestParts.count >= 2 else { return .invalid }
     let method = String(requestParts[0])
     let path = String(requestParts[1])
 
     let contentLength = headerValue(named: "Content-Length", in: Array(lines.dropFirst())).flatMap(Int.init) ?? 0
+    // A negative value would form an invalid body range below (crash); an
+    // oversized one can never complete within `maxRequestBytes`.
+    guard contentLength >= 0, contentLength <= maxRequestBytes else { return .invalid }
 
     let bodyStart = terminatorRange.upperBound
     let availableBodyBytes = buffer.distance(from: bodyStart, to: buffer.endIndex)
-    guard availableBodyBytes >= contentLength else { return nil }
+    guard availableBodyBytes >= contentLength else { return .incomplete }
 
     let bodyEnd = buffer.index(bodyStart, offsetBy: contentLength)
-    return ParsedRequest(method: method, path: path, body: Data(buffer[bodyStart..<bodyEnd]))
+    return .request(ParsedRequest(method: method, path: path, body: Data(buffer[bodyStart..<bodyEnd])))
 }
 
 /// Per-connection read buffer. Touched only serially, on the connection's
@@ -295,10 +306,17 @@ final class EventListener: ObservableObject {
                 return
             }
 
-            if let request = parseHTTPRequest(state.buffer) {
+            switch parseHTTPRequest(state.buffer) {
+            case .request(let request):
                 state.finished = true
                 self.handle(request: request, connection: connection)
                 return
+            case .invalid:
+                state.finished = true
+                self.respond(connection, status: "400 Bad Request", body: Data())
+                return
+            case .incomplete:
+                break
             }
 
             if isComplete {
