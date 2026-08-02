@@ -178,7 +178,7 @@ struct SessionCard: View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(session.displayName)
+                    Text(display.title)
                         .font(Theme.Fonts.headline)
                         .foregroundStyle(Theme.Colors.onSurface)
                         .opacity(isIdle ? 0.6 : 1)

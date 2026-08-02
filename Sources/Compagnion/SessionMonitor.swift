@@ -84,6 +84,7 @@ struct ClaudeSession: Decodable, Identifiable, Equatable, Sendable {
 private struct Enrichment: Sendable {
     var identity: [String: SessionIdentity] = [:]
     var context: [String: ContextUsage] = [:]
+    var aiTitle: [String: String] = [:]
 }
 
 @MainActor
@@ -115,6 +116,7 @@ final class SessionMonitor: ObservableObject {
 
     /// Side state keyed by session id, merged into `displays` on every rebuild.
     private var identities: [String: SessionIdentity] = [:]
+    private var aiTitles: [String: String] = [:]
     private var contextUsage: [String: ContextUsage] = [:]
     private var subagentCounts: [String: Int] = [:]
     private var waitingOverrides: Set<String> = []
@@ -201,6 +203,7 @@ final class SessionMonitor: ObservableObject {
         switch result {
         case .success(let sessions):
             identities.merge(enrichment.identity) { _, new in new }
+            aiTitles.merge(enrichment.aiTitle) { _, new in new }
             // Statusline data is fresher and cheaper than a transcript read,
             // so it wins whenever we have a recent value.
             for (id, usage) in enrichment.context {
@@ -220,6 +223,7 @@ final class SessionMonitor: ObservableObject {
     private func rebuild(from sessions: [ClaudeSession]) {
         let liveIDs = Set(sessions.map(\.id))
         identities = identities.filter { liveIDs.contains($0.key) }
+        aiTitles = aiTitles.filter { liveIDs.contains($0.key) }
         contextUsage = contextUsage.filter { liveIDs.contains($0.key) }
         windowSizes = windowSizes.filter { liveIDs.contains($0.key) }
         subagentCounts = subagentCounts.filter { liveIDs.contains($0.key) }
@@ -237,6 +241,7 @@ final class SessionMonitor: ObservableObject {
                 display.firstPrompt = identity.firstPrompt
                 display.messageCount = identity.messageCount
             }
+            display.aiTitle = aiTitles[session.id]
             if let usage = contextUsage[session.id] {
                 display.contextFraction = usage.fraction
                 display.contextMeasuredAt = usage.measuredAt
@@ -261,7 +266,7 @@ final class SessionMonitor: ObservableObject {
                 }
             }
             if rank(a) != rank(b) { return rank(a) < rank(b) }
-            return a.session.displayName.localizedCaseInsensitiveCompare(b.session.displayName) == .orderedAscending
+            return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
         }
 
         displays = built
@@ -294,9 +299,9 @@ final class SessionMonitor: ObservableObject {
             }
             if let path = enricher.transcriptPath(cwd: session.cwd, sessionId: sessionId) {
                 let assumed = windowSizes[session.id] ?? fallbackSize
-                if let usage = enricher.contextUsage(transcriptPath: path, contextWindowSize: assumed) {
-                    result.context[session.id] = usage
-                }
+                let tail = enricher.readTail(transcriptPath: path, contextWindowSize: assumed)
+                if let usage = tail.usage { result.context[session.id] = usage }
+                if let title = tail.aiTitle { result.aiTitle[session.id] = title }
             }
         }
         return result
