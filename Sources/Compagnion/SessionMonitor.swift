@@ -101,6 +101,8 @@ final class SessionMonitor: ObservableObject {
     /// Raised the first time a session enters a waiting episode, so the
     /// notifier fires once per episode rather than once per poll.
     var onWaitingEpisodeStart: ((SessionDisplay) -> Void)?
+    /// The session left the waiting state (or went away) — clear its banner.
+    var onWaitingEpisodeEnd: ((String) -> Void)?
     var onTurnFinished: ((SessionDisplay) -> Void)?
     var onSubagentFinished: ((SessionDisplay) -> Void)?
 
@@ -117,6 +119,7 @@ final class SessionMonitor: ObservableObject {
     private var subagentCounts: [String: Int] = [:]
     private var waitingOverrides: Set<String> = []
     private var announcedWaiting: Set<String> = []
+    private var pendingTools: [String: String] = [:]
 
     /// Polling is the source of truth; hook events are only the low-latency
     /// edge. With the listener up we can afford a much slower poll.
@@ -209,8 +212,11 @@ final class SessionMonitor: ObservableObject {
         identities = identities.filter { liveIDs.contains($0.key) }
         contextUsage = contextUsage.filter { liveIDs.contains($0.key) }
         subagentCounts = subagentCounts.filter { liveIDs.contains($0.key) }
+        pendingTools = pendingTools.filter { liveIDs.contains($0.key) }
         waitingOverrides.formIntersection(liveIDs)
+        let vanished = announcedWaiting.subtracting(liveIDs)
         announcedWaiting.formIntersection(liveIDs)
+        for id in vanished { onWaitingEpisodeEnd?(id) }
         hostResolver.invalidate(keepingSessionPids: Set(sessions.compactMap(\.pid)))
 
         var built = sessions.map { session -> SessionDisplay in
@@ -225,6 +231,7 @@ final class SessionMonitor: ObservableObject {
                 display.contextMeasuredAt = usage.measuredAt
             }
             display.subagentCount = subagentCounts[session.id] ?? 0
+            display.pendingToolName = pendingTools[session.id]
             // The poll disagreeing with the hook means the episode is over.
             if session.needsAttention {
                 display.waitingOverride = false
@@ -250,11 +257,14 @@ final class SessionMonitor: ObservableObject {
         announceWaitingEpisodes()
     }
 
-    /// One notification per waiting episode: announce on entry, forget on exit.
+    /// One notification per waiting episode: announce on entry, clear on exit.
     private func announceWaitingEpisodes() {
         let waitingNow = Set(displays.filter { $0.badge == .waiting }.map(\.id))
         for display in displays where display.badge == .waiting && !announcedWaiting.contains(display.id) {
             onWaitingEpisodeStart?(display)
+        }
+        for id in announcedWaiting.subtracting(waitingNow) {
+            onWaitingEpisodeEnd?(id)
         }
         announcedWaiting = waitingNow
     }
@@ -328,9 +338,12 @@ final class SessionMonitor: ObservableObject {
             switch kind {
             case .needsAttention:
                 waitingOverrides.insert(sessionId)
+                if let tool = hook.toolName, !tool.isEmpty { pendingTools[sessionId] = tool }
                 applyOverridesImmediately()
             case .turnFinished:
                 waitingOverrides.remove(sessionId)
+                pendingTools[sessionId] = nil
+                applyOverridesImmediately()
                 if let display = displays.first(where: { $0.id == sessionId }) {
                     onTurnFinished?(display)
                 }
@@ -351,11 +364,11 @@ final class SessionMonitor: ObservableObject {
     /// Repaints the affected cards without waiting for the poll to come back.
     private func applyOverridesImmediately() {
         var updated = displays
-        for index in updated.indices where waitingOverrides.contains(updated[index].id) {
-            updated[index].waitingOverride = true
-        }
         for index in updated.indices {
-            updated[index].subagentCount = subagentCounts[updated[index].id] ?? 0
+            let id = updated[index].id
+            updated[index].waitingOverride = waitingOverrides.contains(id)
+            updated[index].subagentCount = subagentCounts[id] ?? 0
+            updated[index].pendingToolName = pendingTools[id]
         }
         displays = updated
         announceWaitingEpisodes()
@@ -410,6 +423,12 @@ final class SessionMonitor: ObservableObject {
     func activate(_ display: SessionDisplay) {
         guard let pid = display.session.pid else { return }
         hostResolver.activate(sessionPid: pid, cwd: display.session.cwd)
+    }
+
+    /// Entry point for a notification click, which only carries the session id.
+    func activate(sessionId: String) {
+        guard let display = displays.first(where: { $0.id == sessionId }) else { return }
+        activate(display)
     }
 
     func hostAppName(for display: SessionDisplay) -> String? {
