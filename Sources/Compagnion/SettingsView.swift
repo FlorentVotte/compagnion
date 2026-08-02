@@ -28,9 +28,10 @@ struct SettingsView: View {
             notificationsSection
             approvalSection
             generalSection
+            aboutSection
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 560)
+        .frame(width: 460, height: 640)
         .task { refreshReport() }
     }
 
@@ -174,6 +175,43 @@ struct SettingsView: View {
             Toggle("Launch Compagnion at login", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, enabled in setLaunchAtLogin(enabled) }
         }
+    }
+
+    // MARK: - About
+
+    private static let repositoryURL = URL(string: "https://github.com/FlorentVotte/compagnion")!
+
+    private var aboutSection: some View {
+        Section {
+            LabeledContent("Version") {
+                Text(Self.versionString).textSelection(.enabled)
+            }
+            LabeledContent("Repository") {
+                Link("github.com/FlorentVotte/compagnion", destination: Self.repositoryURL)
+            }
+            LabeledContent("License") {
+                Link("MIT", destination: Self.repositoryURL.appending(path: "blob/main/LICENSE"))
+            }
+            LabeledContent("Feedback") {
+                Link("Report an issue", destination: Self.repositoryURL.appending(path: "issues"))
+            }
+        } header: {
+            Text("About")
+        } footer: {
+            Text("© 2026 Florent Votte. Compagnion is an independent open-source project, not affiliated with, endorsed by, or sponsored by Anthropic. Claude is a trademark of Anthropic, PBC.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// "0.4.0 (4)" from the bundle; `swift run` has no Info.plist values.
+    private static var versionString: String {
+        let info = Bundle.main.infoDictionary
+        guard let version = info?["CFBundleShortVersionString"] as? String else {
+            return "development build"
+        }
+        let build = info?["CFBundleVersion"] as? String
+        return build.map { "\(version) (\($0))" } ?? version
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {

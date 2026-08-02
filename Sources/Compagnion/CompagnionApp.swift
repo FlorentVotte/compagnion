@@ -47,10 +47,13 @@ final class AppModel: ObservableObject {
 
         // Dev harness: COMPAGNION_PREVIEW=1 shows the panel in a regular
         // window so UI work can be screenshotted/iterated without clicking
-        // the status item. Inert in normal launches.
-        if ProcessInfo.processInfo.environment["COMPAGNION_PREVIEW"] != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [monitor] in
-                let host = NSHostingController(rootView: ContentView(monitor: monitor))
+        // the status item; =settings previews the settings form instead.
+        // Inert in normal launches.
+        if let preview = ProcessInfo.processInfo.environment["COMPAGNION_PREVIEW"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [monitor, notifier] in
+                let host = preview == "settings"
+                    ? NSHostingController(rootView: AnyView(SettingsView(monitor: monitor, notifier: notifier)))
+                    : NSHostingController(rootView: AnyView(ContentView(monitor: monitor)))
                 let window = NSWindow(contentViewController: host)
                 window.title = "PanelPreview"
                 window.setFrameOrigin(NSPoint(x: 100, y: 150))
