@@ -5,17 +5,19 @@ import Foundation
 /// for the verified event names, matcher values, and HTTP-hook JSON shape)
 /// plus a statusline-forwarding shell script.
 ///
-/// ⚠️ Compagnion is a passive observer. Every hook this installer writes
-/// carries only `{"type": "http", "url": ..., "timeout": 3}` — no `command`,
-/// no scripting, nothing that could return a `decision`/`hookSpecificOutput`
-/// body. Per the reference doc, a 2xx JSON response from an HTTP hook is
-/// parsed exactly like a command hook's and CAN allow/deny/block a tool call
-/// or a Stop — so this only works because `EventListener` always answers
-/// with a bare `{}` (inert: no `decision`, no `hookSpecificOutput`). Never
-/// change that response shape without re-reading this comment. `timeout` is
-/// kept at 3 seconds (not the 5s used in the reference doc's illustrative
-/// example) because blocking events wait on our listener before failing
-/// open.
+/// ⚠️ Decision surface — read before touching listener responses or specs.
+/// A 2xx JSON response from an HTTP hook is parsed like a command hook's
+/// output and CAN allow/deny/block. Compagnion's listener answers the inert
+/// `{}` for every event EXCEPT `PermissionRequest`, where — only when the
+/// user has enabled remote approval in Settings, and only while they're away
+/// from the session's terminal — the response is held (up to 60 s, hook
+/// timeout 65 s below) and may carry
+/// `hookSpecificOutput.decision.behavior: allow|deny` chosen by the user
+/// from a notification or the panel. Timeout or any failure falls open to
+/// the normal terminal prompt; every remote decision is appended to
+/// `~/Library/Application Support/Compagnion/approvals.jsonl`. All other
+/// events keep `timeout` at 3 s so a hung listener can never add noticeable
+/// latency to tool calls.
 enum IntegrationInstaller {
 
     // MARK: - Configuration
@@ -39,15 +41,21 @@ enum IntegrationInstaller {
     /// request"). See `.stitch/hooks-reference.md` §3.
     private static let hookTimeoutSeconds = 3
 
-    /// One matcher covering every `notification_type` that means "blocked on
-    /// a human" (`permission_prompt`, `idle_prompt`, `agent_needs_input`)
-    /// plus `agent_completed`, per `.stitch/hooks-reference.md` §2. Matchers
-    /// are regex, so a single alternation is one group instead of four.
-    private static let notificationMatcher = "permission_prompt|idle_prompt|agent_needs_input|agent_completed"
+    /// `PermissionRequest` alone gets a long timeout: its response may be
+    /// held for a remote Allow/Deny (see the header comment). The listener's
+    /// backstop (62 s) and the monitor's hold (60 s) both sit safely under it.
+    private static let approvalTimeoutSeconds = 65
+
+    /// One matcher covering every `notification_type` Compagnion consumes:
+    /// blocked-on-a-human types, elicitation lifecycle (the question a
+    /// session is asking), and background-agent completion. Matchers are
+    /// regex, so a single alternation is one group instead of seven.
+    private static let notificationMatcher = "permission_prompt|idle_prompt|agent_needs_input|agent_completed|elicitation_dialog|elicitation_complete|elicitation_response"
 
     private struct HookEventSpec {
         let name: String
         let matcher: String?
+        var timeout: Int = hookTimeoutSeconds
     }
 
     /// Events with a matcher concept get `"*"` (catch everything); events
@@ -55,10 +63,15 @@ enum IntegrationInstaller {
     /// see reference §5) omit `matcher` entirely, matching the recommended
     /// fragment's convention.
     private static let hookEventSpecs: [HookEventSpec] = [
-        HookEventSpec(name: "PermissionRequest", matcher: "*"),
+        HookEventSpec(name: "PermissionRequest", matcher: "*", timeout: approvalTimeoutSeconds),
         HookEventSpec(name: "Notification", matcher: notificationMatcher),
         HookEventSpec(name: "Stop", matcher: nil),
         HookEventSpec(name: "StopFailure", matcher: nil),
+        HookEventSpec(name: "PreToolUse", matcher: "*"),
+        HookEventSpec(name: "PostToolUse", matcher: "*"),
+        HookEventSpec(name: "PostToolUseFailure", matcher: "*"),
+        HookEventSpec(name: "Elicitation", matcher: nil),
+        HookEventSpec(name: "ElicitationResult", matcher: nil),
         HookEventSpec(name: "SubagentStart", matcher: "*"),
         HookEventSpec(name: "SubagentStop", matcher: "*"),
         HookEventSpec(name: "SessionStart", matcher: nil),
@@ -137,7 +150,12 @@ enum IntegrationInstaller {
         var hooks = settings["hooks"] as? JSONObject ?? [:]
         for spec in hookEventSpecs {
             var groups = hooks[spec.name] as? [JSONObject] ?? []
-            mergeHookEntry(into: &groups, matcher: spec.matcher, endpoint: endpointString)
+            // Normalize: drop any of our entries first, then re-insert per
+            // the current spec — so a matcher or timeout change in a new
+            // Compagnion version self-heals on reinstall instead of leaving
+            // a stale variant behind.
+            groups = removingOurEntries(from: groups, endpoint: endpointString)
+            mergeHookEntry(into: &groups, spec: spec, endpoint: endpointString)
             hooks[spec.name] = groups
         }
         settings["hooks"] = hooks
@@ -218,21 +236,31 @@ enum IntegrationInstaller {
 
     // MARK: - Hook merging
 
+    /// Removes Compagnion's entries (identified by URL) from every group,
+    /// dropping groups left empty. Entries belonging to the user's own hooks
+    /// are never touched.
+    private static func removingOurEntries(from groups: [JSONObject], endpoint: String) -> [JSONObject] {
+        groups.compactMap { group -> JSONObject? in
+            guard var hooksArray = group["hooks"] as? [JSONObject] else { return group }
+            hooksArray.removeAll { entry in
+                (entry["url"] as? String) == endpoint && (entry["type"] as? String) == "http"
+            }
+            guard !hooksArray.isEmpty else { return nil }
+            var group = group
+            group["hooks"] = hooksArray
+            return group
+        }
+    }
+
     /// Adds Compagnion's hook entry to whichever existing group already
     /// shares this event's matcher, or appends a new `{matcher, hooks}`
     /// group. Hooks merge across settings files and within a single file's
     /// event array (reference §5) — so an existing group (the user's own
-    /// hooks for this event) is extended, never replaced. No-ops if our URL
-    /// is already present anywhere in this event's groups.
-    private static func mergeHookEntry(into groups: inout [JSONObject], matcher: String?, endpoint: String) {
-        let alreadyPresent = groups.contains { group in
-            (group["hooks"] as? [JSONObject] ?? []).contains { ($0["url"] as? String) == endpoint }
-        }
-        guard !alreadyPresent else { return }
+    /// hooks for this event) is extended, never replaced.
+    private static func mergeHookEntry(into groups: inout [JSONObject], spec: HookEventSpec, endpoint: String) {
+        let ourHook: JSONObject = ["type": "http", "url": endpoint, "timeout": spec.timeout]
 
-        let ourHook: JSONObject = ["type": "http", "url": endpoint, "timeout": hookTimeoutSeconds]
-
-        if let index = groups.firstIndex(where: { ($0["matcher"] as? String) == matcher }) {
+        if let index = groups.firstIndex(where: { ($0["matcher"] as? String) == spec.matcher }) {
             var group = groups[index]
             var hooksArray = group["hooks"] as? [JSONObject] ?? []
             hooksArray.append(ourHook)
@@ -240,7 +268,7 @@ enum IntegrationInstaller {
             groups[index] = group
         } else {
             var newGroup: JSONObject = ["hooks": [ourHook]]
-            if let matcher {
+            if let matcher = spec.matcher {
                 newGroup["matcher"] = matcher
             }
             groups.append(newGroup)

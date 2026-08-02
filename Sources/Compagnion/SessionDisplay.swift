@@ -1,5 +1,23 @@
 import Foundation
 
+/// A tool call in flight, per PreToolUse/PostToolUse hook events.
+struct ToolActivity: Equatable, Sendable {
+    let toolName: String
+    let summary: String?     // "npm test", "Sources/App.swift", a URL…
+    let startedAt: Date
+}
+
+/// A `PermissionRequest` whose HTTP response is being held open so the user
+/// can Allow/Deny from Compagnion. Resolved via
+/// `SessionMonitor.resolveApproval`; times out to the terminal prompt.
+struct PendingApproval: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let sessionId: String
+    let toolName: String?
+    let summary: String?
+    let receivedAt: Date
+}
+
 /// What the panel draws for one session: the authoritative row from
 /// `claude agents --json` plus whatever enrichment happened to be available.
 /// Every enriched field is optional on purpose — the UI must render correctly
@@ -31,6 +49,20 @@ struct SessionDisplay: Identifiable, Equatable {
     /// only reports a coarse `waitingFor`, so this is the better label when
     /// the event got here first.
     var pendingToolName: String?
+
+    /// What the session is doing right now (PreToolUse → PostToolUse window).
+    var activity: ToolActivity?
+
+    /// The question a session is asking (Elicitation / AskUserQuestion),
+    /// verbatim, while it waits for an answer in the terminal.
+    var question: String?
+
+    /// The last turn ended with an API error (StopFailure) and nothing has
+    /// happened since.
+    var hadError = false
+
+    /// A permission request currently held open for remote Allow/Deny.
+    var pendingApproval: PendingApproval?
 
     var id: String { session.id }
 

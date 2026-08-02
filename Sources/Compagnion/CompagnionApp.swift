@@ -21,14 +21,26 @@ final class AppModel: ObservableObject {
         monitor.onWaitingEpisodeEnd = { [notifier] sessionId in
             notifier.clearWaiting(sessionId: sessionId)
         }
-        monitor.onTurnFinished = { [notifier] display in
-            notifier.notifyTurnFinished(display)
+        monitor.onTurnFinished = { [notifier] display, message in
+            notifier.notifyTurnFinished(display, message: message)
+        }
+        monitor.onTurnFailed = { [notifier] display in
+            notifier.notifyTurnFailed(display)
         }
         monitor.onSubagentFinished = { [notifier] display in
             notifier.notifySubagentFinished(display)
         }
+        monitor.onApprovalRequested = { [notifier] display, approval in
+            notifier.notifyApproval(display, approval: approval)
+        }
+        monitor.onApprovalResolved = { [notifier] approval in
+            notifier.clearApproval(approval)
+        }
         notifier.onOpenSession = { [monitor] sessionId in
             monitor.activate(sessionId: sessionId)
+        }
+        notifier.onApprovalDecision = { [monitor] approvalId, allow in
+            monitor.resolveApproval(approvalId, decision: allow)
         }
         self.monitor = monitor
         self.notifier = notifier

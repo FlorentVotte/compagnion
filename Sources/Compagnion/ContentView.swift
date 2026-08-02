@@ -162,6 +162,15 @@ struct SessionCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             topRow
+            if let question = display.question, isWaiting {
+                questionRow(question)
+            }
+            if let approval = display.pendingApproval {
+                approvalRow(approval)
+            }
+            if let activity = display.activity, display.badge == .working {
+                activityRow(activity)
+            }
             bottomRow
         }
         .padding(Theme.Metrics.cardPadding)
@@ -172,6 +181,68 @@ struct SessionCard: View {
         .onTapGesture { monitor.activate(display) }
         .contextMenu { contextMenu }
         .help(display.tooltip)
+    }
+
+    /// The question the session is asking, verbatim.
+    private func questionRow(_ question: String) -> some View {
+        (Text("Asking: ").bold() + Text(question))
+            .font(Theme.Fonts.body)
+            .foregroundStyle(Theme.Colors.waitingText)
+            .lineLimit(3)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// A held permission request: the command + Allow/Deny, right here.
+    private func approvalRow(_ approval: PendingApproval) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let summary = approval.summary {
+                Text(summary)
+                    .font(Theme.Fonts.mono)
+                    .foregroundStyle(Theme.Colors.onSurface)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                Button("Allow") { monitor.resolveApproval(approval.id, decision: true) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(Theme.Colors.primary)
+                Button("Deny") { monitor.resolveApproval(approval.id, decision: false) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .foregroundStyle(Theme.Colors.error)
+                Spacer()
+                TimelineView(.periodic(from: approval.receivedAt, by: 1)) { context in
+                    let remaining = max(0, 60 - Int(context.date.timeIntervalSince(approval.receivedAt)))
+                    Text("terminal prompt in \(remaining)s")
+                        .font(Theme.Fonts.meta)
+                        .foregroundStyle(Theme.Colors.onSurfaceVariant)
+                }
+            }
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Theme.Colors.waitingChip.opacity(0.5))
+        )
+    }
+
+    /// What the session is doing right now, with a live seconds counter.
+    private func activityRow(_ activity: ToolActivity) -> some View {
+        TimelineView(.periodic(from: activity.startedAt, by: 1)) { context in
+            HStack(spacing: 4) {
+                Image(systemName: "gearshape.2")
+                    .font(.system(size: 9))
+                Text(activity.summary.map { "\(activity.toolName) — \($0)" } ?? activity.toolName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("· \(max(0, Int(context.date.timeIntervalSince(activity.startedAt))))s")
+                    .foregroundStyle(Theme.Colors.outline)
+            }
+            .font(Theme.Fonts.mono)
+            .foregroundStyle(Theme.Colors.onSurfaceVariant)
+        }
     }
 
     private var topRow: some View {
@@ -221,6 +292,12 @@ struct SessionCard: View {
     private var bottomRow: some View {
         HStack(spacing: 8) {
             ContextBar(fraction: display.contextFraction, isStale: display.contextIsStale, isMuted: isIdle)
+            if display.hadError {
+                Label("API error", systemImage: "exclamationmark.octagon.fill")
+                    .font(Theme.Fonts.meta)
+                    .foregroundStyle(Theme.Colors.error)
+                    .help("The last turn ended on an API error")
+            }
             Spacer(minLength: 8)
             if isHovering {
                 Image(systemName: "terminal")

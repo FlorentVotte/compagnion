@@ -37,14 +37,24 @@ final class Notifier: NSObject, ObservableObject {
     private static let categoryIdentifier = "compagnion.session"
     /// Also matches a tap on the notification body itself — see `didReceive`.
     private static let openActionIdentifier = "compagnion.open"
+    /// Category for held permission requests: Allow / Deny buttons.
+    private static let approvalCategoryIdentifier = "compagnion.approval"
+    private nonisolated static let allowActionIdentifier = "compagnion.allow"
+    private nonisolated static let denyActionIdentifier = "compagnion.deny"
     private static let waitingIdentifierPrefix = "compagnion.waiting."
+    private static let approvalIdentifierPrefix = "compagnion.approval."
     private nonisolated static let sessionIdKey = "sessionId"
+    private nonisolated static let approvalIdKey = "approvalId"
 
     @Published private(set) var authorization: Authorization
 
     /// Invoked when the user clicks a notification (body or "Open" action),
     /// passed the session id, so the app can activate its hosting app.
     var onOpenSession: ((String) -> Void)?
+
+    /// Invoked when the user answers a held permission request from the
+    /// notification's Allow/Deny buttons.
+    var onApprovalDecision: ((UUID, Bool) -> Void)?
 
     /// Sessions with a live "needs you" notification — guards against
     /// re-announcing the same waiting episode on every poll tick.
@@ -62,6 +72,8 @@ final class Notifier: NSObject, ObservableObject {
             SettingsKeys.notifyWaiting: true,
             SettingsKeys.notifyTurnFinished: false,
             SettingsKeys.notifySubagentFinished: false,
+            SettingsKeys.notifyError: true,
+            SettingsKeys.remoteApproval: false,
         ])
 
         if Bundle.main.bundleIdentifier != nil {
@@ -77,13 +89,21 @@ final class Notifier: NSObject, ObservableObject {
         guard let center else { return }
         center.delegate = self
         let openAction = UNNotificationAction(identifier: Self.openActionIdentifier, title: "Open", options: [.foreground])
-        let category = UNNotificationCategory(
+        let sessionCategory = UNNotificationCategory(
             identifier: Self.categoryIdentifier,
             actions: [openAction],
             intentIdentifiers: [],
             options: []
         )
-        center.setNotificationCategories([category])
+        let allowAction = UNNotificationAction(identifier: Self.allowActionIdentifier, title: "Allow", options: [])
+        let denyAction = UNNotificationAction(identifier: Self.denyActionIdentifier, title: "Deny", options: [.destructive])
+        let approvalCategory = UNNotificationCategory(
+            identifier: Self.approvalCategoryIdentifier,
+            actions: [allowAction, denyAction, openAction],
+            intentIdentifiers: [],
+            options: []
+        )
+        center.setNotificationCategories([sessionCategory, approvalCategory])
         refreshAuthorization()
     }
 
@@ -124,16 +144,19 @@ final class Notifier: NSObject, ObservableObject {
 
     // MARK: - Notifying
 
-    /// "⟡ {name} needs you" — the tool the hook reported, else the reason the
-    /// poll reported (`ClaudeSession.waitingFor`), else just the folder.
+    /// "⟡ {name} needs you" — the question being asked, else the pending
+    /// command, else the tool/waiting reason, else just the folder.
     func notifyWaiting(_ display: SessionDisplay) {
         guard UserDefaults.standard.bool(forKey: SettingsKeys.notifyWaiting) else { return }
         guard let center else { return }
 
-        let hint = (display.pendingToolName ?? display.session.waitingFor)?
-            .trimmingCharacters(in: .whitespaces)
         let body: String
-        if let hint, !hint.isEmpty {
+        if let question = display.question, !question.isEmpty {
+            body = "Asking: \(Self.preview(question))"
+        } else if let tool = display.pendingToolName, let summary = display.activity?.summary ?? display.pendingApproval?.summary {
+            body = "\(tool): \(Self.preview(summary)) · \(display.folderName)"
+        } else if let hint = (display.pendingToolName ?? display.session.waitingFor)?
+            .trimmingCharacters(in: .whitespaces), !hint.isEmpty {
             body = "\(hint) · \(display.folderName)"
         } else {
             body = display.folderName
@@ -149,13 +172,62 @@ final class Notifier: NSObject, ObservableObject {
         announcedWaiting.insert(display.id)
     }
 
-    /// "✓ {name} finished" — folder + elapsed time.
-    func notifyTurnFinished(_ display: SessionDisplay) {
+    /// "⟡ {name} wants to run {tool}" with Allow/Deny buttons — for a held
+    /// permission request. Gated on the same toggle as waiting notifications:
+    /// remote approval is pointless if you can't see the request.
+    func notifyApproval(_ display: SessionDisplay?, approval: PendingApproval) {
+        guard UserDefaults.standard.bool(forKey: SettingsKeys.notifyWaiting) else { return }
+        guard let center else { return }
+
+        let name = display?.title ?? "A Claude session"
+        var body = approval.summary.map(Self.preview) ?? "Permission requested"
+        if let folder = display?.folderName { body += " · \(folder)" }
+
+        let content = UNMutableNotificationContent()
+        content.title = "⟡ \(name) wants to run \(approval.toolName ?? "a tool")"
+        content.body = body
+        content.sound = .default
+        content.categoryIdentifier = Self.approvalCategoryIdentifier
+        content.interruptionLevel = .timeSensitive
+        content.userInfo = [
+            Self.sessionIdKey: approval.sessionId,
+            Self.approvalIdKey: approval.id.uuidString,
+        ]
+        if authorization == .notDetermined {
+            Task { await requestAuthorizationIfNeeded() }
+        }
+        let request = UNNotificationRequest(
+            identifier: Self.approvalIdentifier(for: approval.id),
+            content: content,
+            trigger: nil
+        )
+        center.add(request) { error in
+            if let error { log("failed to deliver approval: \(error)") }
+        }
+    }
+
+    /// The held request was resolved (from the panel, a timeout, or the
+    /// session vanishing) — retract the actionable notification.
+    func clearApproval(_ approval: PendingApproval) {
+        guard let center else { return }
+        let identifier = Self.approvalIdentifier(for: approval.id)
+        center.removeDeliveredNotifications(withIdentifiers: [identifier])
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+    }
+
+    /// "✓ {name} finished" — the turn's closing words when we have them,
+    /// else folder + elapsed time.
+    func notifyTurnFinished(_ display: SessionDisplay, message: String?) {
         guard UserDefaults.standard.bool(forKey: SettingsKeys.notifyTurnFinished) else { return }
         guard let center else { return }
 
-        var body = display.folderName
-        if let elapsed = display.elapsedLabel { body += " · \(elapsed)" }
+        var body: String
+        if let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            body = Self.preview(message)
+        } else {
+            body = display.folderName
+            if let elapsed = display.elapsedLabel { body += " · \(elapsed)" }
+        }
 
         deliver(
             center: center,
@@ -164,6 +236,29 @@ final class Notifier: NSObject, ObservableObject {
             body: body,
             sessionId: display.id
         )
+    }
+
+    /// "✗ {name} hit an error" — the turn died on an API error (StopFailure).
+    func notifyTurnFailed(_ display: SessionDisplay) {
+        guard UserDefaults.standard.bool(forKey: SettingsKeys.notifyError) else { return }
+        guard let center else { return }
+
+        deliver(
+            center: center,
+            identifier: "compagnion.turnFailed.\(display.id).\(UUID().uuidString)",
+            title: "✗ \(display.title) hit an API error",
+            body: "\(display.folderName) · the turn did not finish",
+            sessionId: display.id
+        )
+    }
+
+    /// Notification bodies get one compact line, however long the source is.
+    private nonisolated static func preview(_ text: String) -> String {
+        let oneLine = text
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return oneLine.count > 140 ? String(oneLine.prefix(140)) + "…" : oneLine
     }
 
     /// "{name}: sub-agent finished".
@@ -192,6 +287,10 @@ final class Notifier: NSObject, ObservableObject {
 
     private static func waitingIdentifier(for sessionId: String) -> String {
         waitingIdentifierPrefix + sessionId
+    }
+
+    private static func approvalIdentifier(for id: UUID) -> String {
+        approvalIdentifierPrefix + id.uuidString
     }
 
     private func deliver(center: UNUserNotificationCenter, identifier: String, title: String, body: String, sessionId: String) {
@@ -230,18 +329,28 @@ extension Notifier: UNUserNotificationCenterDelegate {
         completionHandler([.banner, .sound])
     }
 
-    /// The user clicked the notification body or the "Open" action — either
-    /// way, jump to the session's hosting app.
+    /// Allow/Deny actions resolve the held permission request; a tap on the
+    /// body (or "Open") jumps to the session's hosting app.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let sessionId = response.notification.request.content.userInfo[Self.sessionIdKey] as? String
+        let userInfo = response.notification.request.content.userInfo
+        let sessionId = userInfo[Self.sessionIdKey] as? String
+        let approvalId = (userInfo[Self.approvalIdKey] as? String).flatMap(UUID.init(uuidString:))
+        let action = response.actionIdentifier
         completionHandler()
-        guard let sessionId else { return }
+
         Task { @MainActor in
-            self.onOpenSession?(sessionId)
+            switch action {
+            case Self.allowActionIdentifier:
+                if let approvalId { self.onApprovalDecision?(approvalId, true) }
+            case Self.denyActionIdentifier:
+                if let approvalId { self.onApprovalDecision?(approvalId, false) }
+            default:
+                if let sessionId { self.onOpenSession?(sessionId) }
+            }
         }
     }
 }

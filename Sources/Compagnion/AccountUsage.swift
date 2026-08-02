@@ -4,6 +4,8 @@ enum SettingsKeys {
     static let notifyWaiting = "notify.waiting"
     static let notifyTurnFinished = "notify.turnFinished"
     static let notifySubagentFinished = "notify.subagentFinished"
+    static let notifyError = "notify.error"
+    static let remoteApproval = "approval.remote"
     static let listenerPort = "listener.port"
     static let accountUsage = "accountUsage.snapshot"
     static let windowSize = "context.lastKnownWindowSize"

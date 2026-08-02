@@ -1,4 +1,12 @@
+import AppKit
 import Foundation
+
+/// No-op unless `COMPAGNION_DEBUG` is set — mirrors the other components'
+/// loggers.
+func monitorLog(_ message: @autoclosure () -> String) {
+    guard ProcessInfo.processInfo.environment["COMPAGNION_DEBUG"] != nil else { return }
+    FileHandle.standardError.write(Data(("[SessionMonitor] " + message() + "\n").utf8))
+}
 
 /// One entry from `claude agents --json`. All fields except `cwd` are optional
 /// because the shape differs between interactive and background sessions and
@@ -107,8 +115,15 @@ final class SessionMonitor: ObservableObject {
     var onWaitingEpisodeStart: ((SessionDisplay) -> Void)?
     /// The session left the waiting state (or went away) — clear its banner.
     var onWaitingEpisodeEnd: ((String) -> Void)?
-    var onTurnFinished: ((SessionDisplay) -> Void)?
+    /// Second argument is the turn's `last_assistant_message`, when the Stop
+    /// hook carried one — notification preview material.
+    var onTurnFinished: ((SessionDisplay, String?) -> Void)?
+    var onTurnFailed: ((SessionDisplay) -> Void)?
     var onSubagentFinished: ((SessionDisplay) -> Void)?
+    /// A permission request is being held for remote Allow/Deny.
+    var onApprovalRequested: ((SessionDisplay?, PendingApproval) -> Void)?
+    /// The held request was answered (from anywhere) or timed out.
+    var onApprovalResolved: ((PendingApproval) -> Void)?
 
     private let enricher = SessionEnricher()
     private let hostResolver = HostAppResolver()
@@ -127,6 +142,25 @@ final class SessionMonitor: ObservableObject {
     private var waitingOverrides: [String: Date] = [:]
     private var announcedWaiting: Set<String> = []
     private var pendingTools: [String: String] = [:]
+    /// Live tool call per session (PreToolUse → PostToolUse/Failure window).
+    private var activities: [String: ToolActivity] = [:]
+    /// Question a session is asking (elicitation), verbatim.
+    private var questions: [String: String] = [:]
+    /// Sessions whose last turn died on an API error (StopFailure).
+    private var failures: Set<String> = []
+    /// Held permission requests awaiting remote Allow/Deny.
+    private var pendingApprovals: [PendingApproval] = []
+    private var approvalResponders: [UUID: @Sendable (Data) -> Void] = [:]
+    private var approvalTimeouts: [UUID: Task<Void, Never>] = [:]
+
+    /// How long a held PermissionRequest waits for a remote decision before
+    /// falling through to the normal terminal prompt. Must stay under
+    /// `EventListener.approvalBackstopSeconds` (62) and the installed hook
+    /// timeout (65).
+    private let approvalHoldSeconds: TimeInterval = 60
+    /// A PreToolUse with no matching PostToolUse (missed event, crashed tool)
+    /// shouldn't show as "running" forever.
+    private let activityExpiry: TimeInterval = 10 * 60
 
     /// How long a hook-set waiting override survives polls that disagree with
     /// it. Must exceed one `eventedPollInterval` so at least one full poll —
@@ -161,6 +195,10 @@ final class SessionMonitor: ObservableObject {
 
         listener.onEvent = { [weak self] event in
             self?.handle(event)
+        }
+        listener.onPermissionDecision = { [weak self] hook, respond in
+            guard let self else { respond(Data("{}".utf8)); return }
+            self.handleApprovalRequest(hook, respond: respond)
         }
         listener.start()
 
@@ -241,6 +279,12 @@ final class SessionMonitor: ObservableObject {
         subagentCounts = subagentCounts.filter { liveIDs.contains($0.key) }
         pendingTools = pendingTools.filter { liveIDs.contains($0.key) }
         waitingOverrides = waitingOverrides.filter { liveIDs.contains($0.key) }
+        activities = activities.filter { liveIDs.contains($0.key) }
+        questions = questions.filter { liveIDs.contains($0.key) }
+        failures.formIntersection(liveIDs)
+        for approval in pendingApprovals where !liveIDs.contains(approval.sessionId) {
+            resolveApproval(approval.id, decision: nil)  // session gone — fail open
+        }
         let vanished = announcedWaiting.subtracting(liveIDs)
         announcedWaiting.formIntersection(liveIDs)
         for id in vanished { onWaitingEpisodeEnd?(id) }
@@ -258,24 +302,26 @@ final class SessionMonitor: ObservableObject {
                 display.contextFraction = usage.fraction
                 display.contextMeasuredAt = usage.measuredAt
             }
-            display.subagentCount = subagentCounts[session.id] ?? 0
             // Reconcile hook overrides against this fresh poll. Poll agrees →
             // the override has served its purpose. Poll disagrees → keep the
             // override only while it's younger than the grace window (it may
             // have landed while this poll was already in flight); past that,
             // the user answered without any hook firing and the episode is
-            // over.
-            if session.needsAttention {
+            // over. A held approval pins the override for its whole lifetime.
+            if pendingApprovals.contains(where: { $0.sessionId == session.id }) {
+                display.waitingOverride = true
+            } else if session.needsAttention {
                 waitingOverrides.removeValue(forKey: session.id)
             } else if let overrideSetAt = waitingOverrides[session.id] {
                 if Date().timeIntervalSince(overrideSetAt) > waitingOverrideGrace {
                     waitingOverrides.removeValue(forKey: session.id)
                     pendingTools.removeValue(forKey: session.id)
+                    questions.removeValue(forKey: session.id)
                 } else {
                     display.waitingOverride = true
                 }
             }
-            display.pendingToolName = pendingTools[session.id]
+            decorate(&display)
             return display
         }
 
@@ -388,10 +434,39 @@ final class SessionMonitor: ObservableObject {
             case .turnFinished:
                 waitingOverrides.removeValue(forKey: sessionId)
                 pendingTools[sessionId] = nil
+                activities.removeValue(forKey: sessionId)
+                questions.removeValue(forKey: sessionId)
+                failures.remove(sessionId)
                 applyOverridesImmediately()
                 if let display = displays.first(where: { $0.id == sessionId }) {
-                    onTurnFinished?(display)
+                    onTurnFinished?(display, hook.lastAssistantMessage)
                 }
+            case .turnFailed:
+                activities.removeValue(forKey: sessionId)
+                failures.insert(sessionId)
+                applyOverridesImmediately()
+                if let display = displays.first(where: { $0.id == sessionId }) {
+                    onTurnFailed?(display)
+                }
+            case .activityStart:
+                if let tool = hook.toolName, !tool.isEmpty {
+                    activities[sessionId] = ToolActivity(toolName: tool, summary: hook.toolInputSummary, startedAt: Date())
+                }
+                failures.remove(sessionId)
+                applyOverridesImmediately()
+                return  // fires on EVERY tool call — never trigger a poll
+            case .activityEnd:
+                activities.removeValue(forKey: sessionId)
+                applyOverridesImmediately()
+                return  // same frequency as activityStart
+            case .question:
+                if let message = hook.message, !message.isEmpty { questions[sessionId] = message }
+                waitingOverrides[sessionId] = Date()
+                applyOverridesImmediately()
+            case .questionResolved:
+                questions.removeValue(forKey: sessionId)
+                waitingOverrides.removeValue(forKey: sessionId)
+                applyOverridesImmediately()
             case .subagentStarted:
                 subagentCounts[sessionId, default: 0] += 1
             case .subagentFinished:
@@ -406,14 +481,137 @@ final class SessionMonitor: ObservableObject {
         refresh()
     }
 
+    // MARK: - Remote Allow/Deny
+
+    /// Called by the listener with the held `PermissionRequest` responder.
+    /// Answers inertly right away unless remote approval is enabled AND the
+    /// user is plausibly away from that session's terminal.
+    private func handleApprovalRequest(_ hook: HookEvent, respond: @escaping @Sendable (Data) -> Void) {
+        let inert = Data("{}".utf8)
+        guard UserDefaults.standard.bool(forKey: SettingsKeys.remoteApproval),
+              let sessionId = hook.sessionId else {
+            monitorLog("approval: inert (remote=\(UserDefaults.standard.bool(forKey: SettingsKeys.remoteApproval)) session=\(hook.sessionId ?? "nil"))")
+            respond(inert)
+            return
+        }
+        // At the terminal → answer inertly so the normal prompt shows with
+        // zero added latency; the hold is for when the user is elsewhere.
+        if let pid = displays.first(where: { $0.id == sessionId })?.session.pid,
+           let host = hostResolver.hostApp(for: pid),
+           NSWorkspace.shared.frontmostApplication?.bundleURL?.standardizedFileURL == host.bundleURL {
+            monitorLog("approval: inert (user is at \(host.displayName))")
+            respond(inert)
+            return
+        }
+        monitorLog("approval: holding for session \(sessionId)")
+
+        let approval = PendingApproval(
+            id: UUID(),
+            sessionId: sessionId,
+            toolName: hook.toolName,
+            summary: hook.toolInputSummary,
+            receivedAt: Date()
+        )
+        pendingApprovals.append(approval)
+        approvalResponders[approval.id] = respond
+        waitingOverrides[sessionId] = Date()
+        if let tool = hook.toolName, !tool.isEmpty { pendingTools[sessionId] = tool }
+        // The approval notification (with Allow/Deny buttons) replaces the
+        // generic "needs you" one for this episode.
+        announcedWaiting.insert(sessionId)
+        applyOverridesImmediately()
+        onApprovalRequested?(displays.first { $0.id == sessionId }, approval)
+
+        approvalTimeouts[approval.id] = Task { [weak self, holdSeconds = approvalHoldSeconds] in
+            try? await Task.sleep(for: .seconds(holdSeconds))
+            guard !Task.isCancelled else { return }
+            self?.resolveApproval(approval.id, decision: nil)
+        }
+    }
+
+    /// Resolves a held permission request: `true` → allow, `false` → deny,
+    /// `nil` → give up and let the terminal prompt take over.
+    func resolveApproval(_ id: UUID, decision: Bool?) {
+        guard let index = pendingApprovals.firstIndex(where: { $0.id == id }) else { return }
+        let approval = pendingApprovals.remove(at: index)
+        approvalTimeouts.removeValue(forKey: id)?.cancel()
+
+        if let respond = approvalResponders.removeValue(forKey: id) {
+            respond(Self.approvalResponseBody(decision: decision))
+        }
+        if let decision {
+            // An explicit decision unblocks (or interrupts) the session —
+            // don't leave the orange card lingering until the next poll.
+            waitingOverrides.removeValue(forKey: approval.sessionId)
+            pendingTools.removeValue(forKey: approval.sessionId)
+            Self.auditLog(approval, allowed: decision)
+        }
+        applyOverridesImmediately()
+        onApprovalResolved?(approval)
+        refresh()
+    }
+
+    private static func approvalResponseBody(decision: Bool?) -> Data {
+        guard let decision else { return Data("{}".utf8) }
+        // Shape verified against the 2.1.220 binary's PermissionRequest
+        // hook-output zod schema.
+        let payload: [String: Any] = [
+            "hookSpecificOutput": [
+                "hookEventName": "PermissionRequest",
+                "decision": decision
+                    ? ["behavior": "allow"]
+                    : ["behavior": "deny", "message": "Denied from Compagnion"],
+            ],
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
+    }
+
+    /// Every remote decision leaves a trace the user can audit.
+    private nonisolated static func auditLog(_ approval: PendingApproval, allowed: Bool) {
+        let entry: [String: Any] = [
+            "at": ISO8601DateFormatter().string(from: Date()),
+            "sessionId": approval.sessionId,
+            "tool": approval.toolName ?? "?",
+            "summary": approval.summary ?? "",
+            "decision": allowed ? "allow" : "deny",
+        ]
+        guard var data = try? JSONSerialization.data(withJSONObject: entry) else { return }
+        data.append(Data("\n".utf8))
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/Compagnion/approvals.jsonl")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: url)
+        }
+    }
+
+    /// Copies the hook-fed side state onto one display row.
+    private func decorate(_ display: inout SessionDisplay) {
+        let id = display.id
+        display.subagentCount = subagentCounts[id] ?? 0
+        display.pendingToolName = pendingTools[id]
+        if let activity = activities[id] {
+            if Date().timeIntervalSince(activity.startedAt) > activityExpiry {
+                activities.removeValue(forKey: id)
+            } else {
+                display.activity = activity
+            }
+        }
+        display.question = questions[id]
+        display.hadError = failures.contains(id)
+        display.pendingApproval = pendingApprovals.first { $0.sessionId == id }
+    }
+
     /// Repaints the affected cards without waiting for the poll to come back.
     private func applyOverridesImmediately() {
         var updated = displays
         for index in updated.indices {
-            let id = updated[index].id
-            updated[index].waitingOverride = waitingOverrides[id] != nil
-            updated[index].subagentCount = subagentCounts[id] ?? 0
-            updated[index].pendingToolName = pendingTools[id]
+            updated[index].waitingOverride = waitingOverrides[updated[index].id] != nil
+            decorate(&updated[index])
         }
         displays = updated
         announceWaitingEpisodes()
@@ -493,6 +691,11 @@ final class SessionMonitor: ObservableObject {
 enum HookEventKind {
     case needsAttention
     case turnFinished
+    case turnFailed
+    case activityStart
+    case activityEnd
+    case question
+    case questionResolved
     case subagentStarted
     case subagentFinished
     case lifecycle
@@ -500,7 +703,7 @@ enum HookEventKind {
 
     /// `Notification` matcher values that mean the session is blocked on a human.
     private static let attentionNotifications: Set<String> = [
-        "permission_prompt", "idle_prompt", "agent_needs_input", "elicitation_dialog",
+        "permission_prompt", "idle_prompt", "agent_needs_input",
     ]
 
     init(eventName: String, notificationType: String?, message: String?) {
@@ -509,6 +712,11 @@ enum HookEventKind {
             let type = (notificationType ?? "").lowercased()
             if Self.attentionNotifications.contains(type) {
                 self = .needsAttention
+            } else if type == "elicitation_dialog" {
+                // The `message` carries the question being asked.
+                self = .question
+            } else if type == "elicitation_complete" || type == "elicitation_response" {
+                self = .questionResolved
             } else if type == "agent_completed" {
                 self = .turnFinished
             } else if type.isEmpty {
@@ -520,12 +728,22 @@ enum HookEventKind {
             } else {
                 self = .other
             }
-        case "PermissionRequest", "Elicitation":
+        case "PermissionRequest":
             self = .needsAttention
+        case "Elicitation":
+            self = .question
+        case "ElicitationResult":
+            self = .questionResolved
+        case "PreToolUse":
+            self = .activityStart
+        case "PostToolUse", "PostToolUseFailure":
+            self = .activityEnd
         case "PermissionDenied":
             self = .other
-        case "Stop", "StopFailure":
+        case "Stop":
             self = .turnFinished
+        case "StopFailure":
+            self = .turnFailed
         case "SubagentStart":
             self = .subagentStarted
         case "SubagentStop":
