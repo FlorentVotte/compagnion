@@ -57,7 +57,9 @@ cask "compagnion" do
     strategy :github_latest
   end
 
-  depends_on macos: ">= :sonoma"
+  # A bare symbol means "this version or newer". The ">= :sonoma" string form
+  # is deprecated and warns on every brew invocation.
+  depends_on macos: :sonoma
 
   app "Compagnion.app"
 

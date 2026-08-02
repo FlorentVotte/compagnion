@@ -27,7 +27,17 @@ time. Hover a row to copy the command that jumps back into that session
 swift run            # quick start, runs from the terminal
 ```
 
-## Install as an app
+## Install
+
+```sh
+brew install --cask florentvotte/tap/compagnion
+```
+
+Or grab the DMG from [Releases](https://github.com/FlorentVotte/compagnion/releases)
+and drag Compagnion into Applications. Both are universal, Developer ID signed
+and notarized, so no Gatekeeper prompt.
+
+## Build it yourself
 
 ```sh
 ./make-app.sh        # builds release + Compagnion.app
@@ -47,9 +57,21 @@ with `swift Resources/make-icon.swift` after changing the design.
 DRY_RUN=1 ./release.sh   # everything except the Apple round-trips
 ```
 
-Output lands in `dist/Compagnion-<version>.dmg`, ready to attach to a GitHub
-release. Both the app and the DMG are notarized and stapled, so the app
-validates offline once dragged out of the image.
+Output lands in `dist/Compagnion-<version>.dmg` plus `dist/compagnion.rb`, the
+Homebrew cask with the version and sha256 already filled in. Both the app and
+the DMG are notarized and stapled, so the app validates offline once dragged
+out of the image.
+
+Publishing a release:
+
+```sh
+gh release create v<version> dist/Compagnion-<version>.dmg --title v<version>
+cp dist/compagnion.rb ../homebrew-tap/Casks/compagnion.rb   # then commit + push
+```
+
+The tap lives at [FlorentVotte/homebrew-tap](https://github.com/FlorentVotte/homebrew-tap).
+`CASK_ONLY=1 ./release.sh` regenerates the cask from an existing DMG when only
+its metadata changed, without rebuilding or re-notarizing.
 
 One-time setup (paid Apple Developer membership required):
 
