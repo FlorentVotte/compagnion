@@ -121,6 +121,14 @@ final class SessionMonitor: ObservableObject {
     private var announcedWaiting: Set<String> = []
     private var pendingTools: [String: String] = [:]
 
+    /// Context-window size per session, as reported by the statusline — the
+    /// only authoritative source. The last one seen is remembered globally so
+    /// the transcript fallback has a better starting guess than 200k for
+    /// users who run on a larger window.
+    private var windowSizes: [String: Int] = [:]
+    private var defaultWindowSize: Int = UserDefaults.standard.object(forKey: SettingsKeys.windowSize) as? Int
+        ?? SessionEnricher.windowTiers[0]
+
     /// Polling is the source of truth; hook events are only the low-latency
     /// edge. With the listener up we can afford a much slower poll.
     private let idlePollInterval: TimeInterval
@@ -172,11 +180,13 @@ final class SessionMonitor: ObservableObject {
         schedulePoll(interval: listener.isListening ? eventedPollInterval : idlePollInterval)
         guard let claudePath, !isRefreshing else { return }
         isRefreshing = true
+        let sizes = windowSizes
+        let fallbackSize = defaultWindowSize
         Task.detached(priority: .utility) { [enricher] in
             let result = Self.fetchSessions(claudePath: claudePath)
             let enrichment: Enrichment
             if case .success(let sessions) = result {
-                enrichment = Self.enrich(sessions: sessions, using: enricher)
+                enrichment = Self.enrich(sessions: sessions, using: enricher, windowSizes: sizes, fallbackSize: fallbackSize)
             } else {
                 enrichment = Enrichment()
             }
@@ -211,6 +221,7 @@ final class SessionMonitor: ObservableObject {
         let liveIDs = Set(sessions.map(\.id))
         identities = identities.filter { liveIDs.contains($0.key) }
         contextUsage = contextUsage.filter { liveIDs.contains($0.key) }
+        windowSizes = windowSizes.filter { liveIDs.contains($0.key) }
         subagentCounts = subagentCounts.filter { liveIDs.contains($0.key) }
         pendingTools = pendingTools.filter { liveIDs.contains($0.key) }
         waitingOverrides.formIntersection(liveIDs)
@@ -269,16 +280,23 @@ final class SessionMonitor: ObservableObject {
         announcedWaiting = waitingNow
     }
 
-    private nonisolated static func enrich(sessions: [ClaudeSession], using enricher: SessionEnricher) -> Enrichment {
+    private nonisolated static func enrich(
+        sessions: [ClaudeSession],
+        using enricher: SessionEnricher,
+        windowSizes: [String: Int],
+        fallbackSize: Int
+    ) -> Enrichment {
         var result = Enrichment()
         for session in sessions {
             guard let sessionId = session.sessionId else { continue }
             if let identity = enricher.identity(cwd: session.cwd, sessionId: sessionId) {
                 result.identity[session.id] = identity
             }
-            if let path = enricher.transcriptPath(cwd: session.cwd, sessionId: sessionId),
-               let usage = enricher.contextUsage(transcriptPath: path) {
-                result.context[session.id] = usage
+            if let path = enricher.transcriptPath(cwd: session.cwd, sessionId: sessionId) {
+                let assumed = windowSizes[session.id] ?? fallbackSize
+                if let usage = enricher.contextUsage(transcriptPath: path, contextWindowSize: assumed) {
+                    result.context[session.id] = usage
+                }
             }
         }
         return result
@@ -376,7 +394,14 @@ final class SessionMonitor: ObservableObject {
 
     private func handle(statusline: StatuslineUpdate) {
         if let context = statusline.contextWindow {
-            let size = context.contextWindowSize ?? 200_000
+            let size = context.contextWindowSize ?? defaultWindowSize
+            if let reported = context.contextWindowSize {
+                if let sessionId = statusline.sessionId { windowSizes[sessionId] = reported }
+                if reported != defaultWindowSize {
+                    defaultWindowSize = reported
+                    UserDefaults.standard.set(reported, forKey: SettingsKeys.windowSize)
+                }
+            }
             let fraction: Double?
             if let percentage = context.usedPercentage {
                 fraction = min(max(percentage / 100, 0), 1)

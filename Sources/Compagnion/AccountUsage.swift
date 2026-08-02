@@ -6,6 +6,7 @@ enum SettingsKeys {
     static let notifySubagentFinished = "notify.subagentFinished"
     static let listenerPort = "listener.port"
     static let accountUsage = "accountUsage.snapshot"
+    static let windowSize = "context.lastKnownWindowSize"
 }
 
 /// Account-level rate-limit state, as reported by the statusline JSON.
