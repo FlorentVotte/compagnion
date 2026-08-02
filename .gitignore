@@ -1,3 +1,5 @@
 .build/
 Compagnion.app/
 *.xcuserstate
+dist/
+.DS_Store
