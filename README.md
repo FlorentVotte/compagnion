@@ -96,3 +96,17 @@ runtime and entitlements to local ad-hoc builds so the two behave alike.
 - macOS 14+
 - Claude Code CLI installed (looked up in `~/.local/bin`, `~/.claude/local`,
   `/opt/homebrew/bin`, `/usr/local/bin`)
+
+## Privacy
+
+Everything stays on your machine: Compagnion reads local Claude Code state
+(`claude agents --json`, `~/.claude` transcripts and settings) and listens
+only on `127.0.0.1`. It sends no telemetry and makes no network requests.
+
+## License
+
+[MIT](LICENSE).
+
+Compagnion is an independent open-source project. It is not affiliated with,
+endorsed by, or sponsored by Anthropic. Claude is a trademark of Anthropic,
+PBC.

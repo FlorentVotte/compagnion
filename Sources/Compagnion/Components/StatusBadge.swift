@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Session status shown by `StatusBadge`, mirroring the Stitch design's
-/// three card states.
+/// Session status shown by `StatusBadge`, one of the design's three card
+/// states.
 enum SessionBadge {
     case waiting
     case working

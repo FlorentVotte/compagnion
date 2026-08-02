@@ -685,8 +685,8 @@ final class SessionMonitor: ObservableObject {
 }
 
 /// Normalizes the hook event names Claude Code emits into the handful of
-/// states the panel cares about. Names verified against Claude Code 2.1.220 —
-/// see `.stitch/hooks-reference.md`. Notably there is no `TurnEnd` event, and
+/// states the panel cares about. Names verified against Claude Code 2.1.220.
+/// Notably there is no `TurnEnd` event, and
 /// `PreToolUse` fires on *every* tool call, so it must not imply "waiting".
 enum HookEventKind {
     case needsAttention

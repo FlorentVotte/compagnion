@@ -1,9 +1,9 @@
 import Foundation
 
 /// Installs / removes Compagnion's Claude Code integration: a handful of
-/// HTTP hooks in `~/.claude/settings.json` (see `.stitch/hooks-reference.md`
-/// for the verified event names, matcher values, and HTTP-hook JSON shape)
-/// plus a statusline-forwarding shell script.
+/// HTTP hooks in `~/.claude/settings.json` (event names, matcher values, and
+/// the HTTP-hook JSON shape verified against Claude Code 2.1.220 and
+/// code.claude.com/docs/en/hooks) plus a statusline-forwarding shell script.
 ///
 /// ⚠️ Decision surface — read before touching listener responses or specs.
 /// A 2xx JSON response from an HTTP hook is parsed like a command hook's
@@ -38,7 +38,7 @@ enum IntegrationInstaller {
 
     /// Seconds, not milliseconds — verified against the installed binary's
     /// `HttpHookSchema` doc-string ("Timeout in seconds for this specific
-    /// request"). See `.stitch/hooks-reference.md` §3.
+    /// request").
     private static let hookTimeoutSeconds = 3
 
     /// `PermissionRequest` alone gets a long timeout: its response may be
@@ -59,9 +59,8 @@ enum IntegrationInstaller {
     }
 
     /// Events with a matcher concept get `"*"` (catch everything); events
-    /// without one (`Stop`, `StopFailure`, `SessionStart`, `SessionEnd` —
-    /// see reference §5) omit `matcher` entirely, matching the recommended
-    /// fragment's convention.
+    /// without one (`Stop`, `StopFailure`, `SessionStart`, `SessionEnd`)
+    /// omit `matcher` entirely, matching the documented convention.
     private static let hookEventSpecs: [HookEventSpec] = [
         HookEventSpec(name: "PermissionRequest", matcher: "*", timeout: approvalTimeoutSeconds),
         HookEventSpec(name: "Notification", matcher: notificationMatcher),
@@ -255,7 +254,7 @@ enum IntegrationInstaller {
     /// Adds Compagnion's hook entry to whichever existing group already
     /// shares this event's matcher, or appends a new `{matcher, hooks}`
     /// group. Hooks merge across settings files and within a single file's
-    /// event array (reference §5) — so an existing group (the user's own
+    /// event array — so an existing group (the user's own
     /// hooks for this event) is extended, never replaced.
     private static func mergeHookEntry(into groups: inout [JSONObject], spec: HookEventSpec, endpoint: String) {
         let ourHook: JSONObject = ["type": "http", "url": endpoint, "timeout": spec.timeout]
@@ -355,7 +354,7 @@ enum IntegrationInstaller {
     }
 
     /// Embeds `originalCommand` as a POSIX single-quoted literal (rather
-    /// than PLAN.md's `eval` sketch, which breaks on quotes/apostrophes in
+    /// than an `eval`-based approach, which breaks on quotes/apostrophes in
     /// the original command) so `sh -c '<literal>'` reproduces exactly what
     /// Claude Code itself would have run.
     private static func forwarderScriptContents(port: UInt16, originalCommand: String?) -> String {

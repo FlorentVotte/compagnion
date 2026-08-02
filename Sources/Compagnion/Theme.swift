@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// Design-system tokens for the Compagnion menu-bar panel, matching the
-/// Stitch design (`.stitch/designs/menu-bar-panel.html`). Namespaced so call
+/// Design-system tokens for the Compagnion menu-bar panel. Namespaced so call
 /// sites read `Theme.Colors.primary`, `Theme.Fonts.headline`, etc.
 enum Theme {
     enum Colors {

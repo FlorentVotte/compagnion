@@ -66,7 +66,7 @@ final class Notifier: NSObject, ObservableObject {
     private let center: UNUserNotificationCenter?
 
     override init() {
-        // First launch should already match PLAN.md's defaults even before
+        // First launch should already get the intended defaults even before
         // the settings UI has been opened once.
         UserDefaults.standard.register(defaults: [
             SettingsKeys.notifyWaiting: true,

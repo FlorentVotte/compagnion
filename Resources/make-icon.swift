@@ -105,26 +105,24 @@ func drawIcon(size: CGFloat) -> NSImage {
     return image
 }
 
-/// The same `asterisk` SF Symbol the menu-bar item uses, so the Dock icon and
-/// the status item read as one mark.
+/// A hand-drawn six-arm asterisk echoing the menu-bar glyph. Drawn from
+/// scratch because Apple's license forbids rendering SF Symbols into app
+/// icons (in-app use, as in the status item, is fine).
 func drawAsterisk(in content: CGRect, scale: CGFloat) {
-    let glyphBox = content.insetBy(dx: content.width * 0.24, dy: content.height * 0.24)
-    let configuration = NSImage.SymbolConfiguration(
-        pointSize: glyphBox.height,
-        weight: .medium
-    )
-    guard let symbol = NSImage(systemSymbolName: "asterisk", accessibilityDescription: nil)?
-        .withSymbolConfiguration(configuration) else { return }
+    let glyphBox = content.insetBy(dx: content.width * 0.26, dy: content.height * 0.26)
+    let radius = glyphBox.height / 2
+    let center = CGPoint(x: content.midX, y: content.midY)
 
-    let aspect = symbol.size.width / symbol.size.height
-    let height = glyphBox.height
-    let width = height * aspect
-    let target = CGRect(
-        x: content.midX - width / 2,
-        y: content.midY - height / 2,
-        width: width,
-        height: height
-    )
+    let path = NSBezierPath()
+    path.lineWidth = glyphBox.height * 0.15
+    path.lineCapStyle = .round
+    // Three full strokes through the center: one vertical, two at ±60°.
+    for armIndex in 0..<3 {
+        let angle = CGFloat.pi / 2 + CGFloat(armIndex) * CGFloat.pi / 3
+        let dx = cos(angle) * radius, dy = sin(angle) * radius
+        path.move(to: CGPoint(x: center.x - dx, y: center.y - dy))
+        path.line(to: CGPoint(x: center.x + dx, y: center.y + dy))
+    }
 
     NSGraphicsContext.current?.saveGraphicsState()
     let shadow = NSShadow()
@@ -133,14 +131,8 @@ func drawAsterisk(in content: CGRect, scale: CGFloat) {
     shadow.shadowOffset = NSSize(width: 0, height: -4 * scale)
     shadow.set()
 
-    let tinted = NSImage(size: target.size)
-    tinted.lockFocus()
-    symbol.draw(in: CGRect(origin: .zero, size: target.size))
-    NSColor(srgbRed: 0.988, green: 0.976, blue: 0.973, alpha: 1).set()  // Theme surface
-    CGRect(origin: .zero, size: target.size).fill(using: .sourceAtop)
-    tinted.unlockFocus()
-
-    tinted.draw(in: target)
+    NSColor(srgbRed: 0.988, green: 0.976, blue: 0.973, alpha: 1).setStroke()  // Theme surface
+    path.stroke()
     NSGraphicsContext.current?.restoreGraphicsState()
 }
 

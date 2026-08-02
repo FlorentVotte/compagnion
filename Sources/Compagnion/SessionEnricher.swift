@@ -68,8 +68,8 @@ final class SessionEnricher: @unchecked Sendable {
 
     /// cwd with every non-alphanumeric character replaced by `-`. Matches the
     /// convention observed in real `~/.claude/projects/` directory names on
-    /// this machine (e.g. `/Users/user/dev/compagnion` →
-    /// `-Users-user-dev-compagnion`; a leading `/` and every path `/`
+    /// this machine (e.g. `/Users/jane/dev/myproject` →
+    /// `-Users-jane-dev-myproject`; a leading `/` and every path `/`
     /// separator both become a single `-`).
     static func projectSlug(for cwd: String) -> String {
         String(cwd.map { $0.isLetter || $0.isNumber ? $0 : "-" })

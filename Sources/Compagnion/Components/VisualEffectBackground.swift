@@ -24,7 +24,7 @@ struct VisualEffectBackground: NSViewRepresentable {
 extension View {
     /// Applies the panel's tinted glass background in one call: the blurred
     /// `NSVisualEffectView` material with `Theme.Colors.surface` at ~75%
-    /// opacity layered on top, matching the Stitch design's `.glass` class.
+    /// opacity layered on top.
     func glassBackground(material: NSVisualEffectView.Material = .popover) -> some View {
         background(
             ZStack {
