@@ -142,7 +142,7 @@ final class Notifier: NSObject, ObservableObject {
         deliver(
             center: center,
             identifier: Self.waitingIdentifier(for: display.id),
-            title: "⟡ \(display.session.displayName) needs you",
+            title: "⟡ \(display.title) needs you",
             body: body,
             sessionId: display.id
         )
@@ -160,7 +160,7 @@ final class Notifier: NSObject, ObservableObject {
         deliver(
             center: center,
             identifier: "compagnion.turnFinished.\(display.id).\(UUID().uuidString)",
-            title: "✓ \(display.session.displayName) finished",
+            title: "✓ \(display.title) finished",
             body: body,
             sessionId: display.id
         )
@@ -174,7 +174,7 @@ final class Notifier: NSObject, ObservableObject {
         deliver(
             center: center,
             identifier: "compagnion.subagentFinished.\(display.id).\(UUID().uuidString)",
-            title: "\(display.session.displayName): sub-agent finished",
+            title: "\(display.title): sub-agent finished",
             body: display.folderName,
             sessionId: display.id
         )

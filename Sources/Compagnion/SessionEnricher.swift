@@ -11,6 +11,12 @@ struct SessionIdentity: Equatable {
 
 /// A point-in-time read of a session's context-window fill, derived from the
 /// most recent `message.usage` entry in its transcript.
+/// What one read of a transcript's tail yields.
+struct TranscriptTail: Equatable {
+    var usage: ContextUsage?
+    var aiTitle: String?
+}
+
 struct ContextUsage: Equatable {
     let fraction: Double         // 0...1 (clamped)
     let totalInputTokens: Int
@@ -106,13 +112,20 @@ final class SessionEnricher: @unchecked Sendable {
     /// scans backwards for the most recent non-sidechain line with
     /// `message.usage`. Returns `nil` if none is found in that window.
     func contextUsage(transcriptPath: String, contextWindowSize: Int = 200_000) -> ContextUsage? {
+        readTail(transcriptPath: transcriptPath, contextWindowSize: contextWindowSize).usage
+    }
+
+    /// Both facts worth knowing live in the same few KB at the end of the
+    /// file, so they share one read rather than two.
+    func readTail(transcriptPath: String, contextWindowSize: Int = 200_000) -> TranscriptTail {
+        var result = TranscriptTail()
         guard let handle = FileHandle(forReadingAtPath: transcriptPath) else {
-            log("contextUsage: cannot open \(transcriptPath)")
-            return nil
+            log("readTail: cannot open \(transcriptPath)")
+            return result
         }
         defer { try? handle.close() }
 
-        guard let fileSize = try? handle.seekToEnd(), fileSize > 0 else { return nil }
+        guard let fileSize = try? handle.seekToEnd(), fileSize > 0 else { return result }
 
         let chunkSize: UInt64 = 64 * 1024
         let maxTotal: UInt64 = 1024 * 1024
@@ -130,19 +143,23 @@ final class SessionEnricher: @unchecked Sendable {
             guard let chunk = try? handle.read(upToCount: Int(readSize)), !chunk.isEmpty else { break }
             collected = chunk + collected
 
-            if let tokens = Self.latestTotalInputTokens(in: collected, discardFirstPartialLine: offset > 0) {
+            let lines = Self.lines(in: collected, discardFirstPartialLine: offset > 0)
+
+            if result.usage == nil, let tokens = Self.latestTotalInputTokens(in: lines) {
                 let size = Self.resolveWindowSize(assumed: contextWindowSize, observedTokens: tokens)
-                let fraction = min(1, max(0, Double(tokens) / Double(size)))
-                return ContextUsage(
-                    fraction: fraction,
+                result.usage = ContextUsage(
+                    fraction: min(1, max(0, Double(tokens) / Double(size))),
                     totalInputTokens: tokens,
                     contextWindowSize: size,
                     measuredAt: Date()
                 )
             }
+            if result.aiTitle == nil {
+                result.aiTitle = Self.latestAITitle(in: lines)
+            }
+            if result.usage != nil && result.aiTitle != nil { return result }
         }
-        log("contextUsage: no usage line found in tail of \(transcriptPath)")
-        return nil
+        return result
     }
 
     /// Context-window tiers Claude Code offers, smallest first.
@@ -246,19 +263,24 @@ final class SessionEnricher: @unchecked Sendable {
     /// is not a sidechain (sub-agent) turn. `discardFirstPartialLine` should be
     /// `true` whenever `data` doesn't start at byte 0 of the file, since the
     /// first line in that case is likely truncated.
-    private static func latestTotalInputTokens(in data: Data, discardFirstPartialLine: Bool) -> Int? {
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
+    private static func lines(in data: Data, discardFirstPartialLine: Bool) -> [String] {
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
         var lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
         if discardFirstPartialLine, !lines.isEmpty {
             lines.removeFirst()
         }
+        return lines
+    }
 
+    private static func decode(_ line: String) -> [String: Any]? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        return object as? [String: Any]
+    }
+
+    private static func latestTotalInputTokens(in lines: [String]) -> Int? {
         for line in lines.reversed() {
-            guard let lineData = line.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: lineData),
-                  let dict = object as? [String: Any] else {
-                continue
-            }
+            guard let dict = decode(line) else { continue }
             if let isSidechain = dict["isSidechain"] as? Bool, isSidechain {
                 continue
             }
@@ -270,6 +292,19 @@ final class SessionEnricher: @unchecked Sendable {
             let cacheCreation = (usage["cache_creation_input_tokens"] as? Int) ?? 0
             let cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
             return input + cacheCreation + cacheRead
+        }
+        return nil
+    }
+
+    /// Claude Code writes an `ai-title` line each time it re-summarises what
+    /// the session is about; the most recent one is the current title.
+    private static func latestAITitle(in lines: [String]) -> String? {
+        for line in lines.reversed() {
+            guard let dict = decode(line),
+                  dict["type"] as? String == "ai-title",
+                  let title = dict["aiTitle"] as? String else { continue }
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
         }
         return nil
     }
