@@ -1,5 +1,8 @@
 # Compagnion
 
+> *Compagnon* in French, *companion* in English — this app lives somewhere
+> in between.
+
 A macOS menu-bar companion for [Claude Code](https://claude.com/claude-code):
 see at a glance which of your sessions are working, idle, or waiting for your
 input — and get pinged the moment one needs you.
