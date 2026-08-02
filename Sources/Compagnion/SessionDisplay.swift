@@ -24,6 +24,11 @@ struct SessionDisplay: Identifiable, Equatable {
     /// event wins until the next poll agrees or clears it.
     var waitingOverride = false
 
+    /// Tool named by the hook that blocked this session, e.g. "Bash". The poll
+    /// only reports a coarse `waitingFor`, so this is the better label when
+    /// the event got here first.
+    var pendingToolName: String?
+
     var id: String { session.id }
 
     init(session: ClaudeSession) {
