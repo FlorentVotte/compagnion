@@ -131,17 +131,34 @@ final class SessionEnricher: @unchecked Sendable {
             collected = chunk + collected
 
             if let tokens = Self.latestTotalInputTokens(in: collected, discardFirstPartialLine: offset > 0) {
-                let fraction = min(1, max(0, Double(tokens) / Double(contextWindowSize)))
+                let size = Self.resolveWindowSize(assumed: contextWindowSize, observedTokens: tokens)
+                let fraction = min(1, max(0, Double(tokens) / Double(size)))
                 return ContextUsage(
                     fraction: fraction,
                     totalInputTokens: tokens,
-                    contextWindowSize: contextWindowSize,
+                    contextWindowSize: size,
                     measuredAt: Date()
                 )
             }
         }
         log("contextUsage: no usage line found in tail of \(transcriptPath)")
         return nil
+    }
+
+    /// Context-window tiers Claude Code offers, smallest first.
+    static let windowTiers = [200_000, 1_000_000]
+
+    /// The transcript records `message.model` as a bare id (`claude-opus-5`)
+    /// with no hint of which context tier the session runs on, so a 1M-window
+    /// session looks identical to a 200k one until it exceeds 200k tokens.
+    /// When the observed token count doesn't fit the assumed window, the
+    /// assumption is simply wrong — promote to the smallest tier that fits
+    /// rather than clamping to a confident-looking 100%.
+    static func resolveWindowSize(assumed: Int, observedTokens: Int) -> Int {
+        guard observedTokens > assumed else { return assumed }
+        // Past every known tier the reading is unexplainable either way, but
+        // the largest tier is still the least wrong denominator.
+        return windowTiers.first { $0 >= observedTokens } ?? max(assumed, windowTiers.last ?? assumed)
     }
 
     /// Drop all cached index reads. Safe to call from any thread/queue.
