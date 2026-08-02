@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "primary-fixed-dim": "#adc6ff",
+            "on-primary-fixed-variant": "#004493",
+            "error": "#ba1a1a",
+            "inverse-on-surface": "#f3f0ef",
+            "outline": "#717786",
+            "on-surface": "#1c1b1b",
+            "tertiary-container": "#737479",
+            "on-secondary": "#ffffff",
+            "surface-variant": "#e5e2e1",
+            "tertiary-fixed-dim": "#c6c6cb",
+            "surface-bright": "#fcf9f8",
+            "secondary": "#5d5e63",
+            "on-secondary-fixed": "#1a1c1f",
+            "on-tertiary-fixed": "#1a1c1f",
+            "secondary-fixed-dim": "#c6c6cb",
+            "on-error-container": "#93000a",
+            "primary-container": "#0070eb",
+            "tertiary": "#5a5c60",
+            "outline-variant": "#c1c6d7",
+            "surface-dim": "#dcd9d9",
+            "on-error": "#ffffff",
+            "surface-container": "#f0eded",
+            "on-primary": "#ffffff",
+            "tertiary-fixed": "#e2e2e7",
+            "on-background": "#1c1b1b",
+            "surface-container-highest": "#e5e2e1",
+            "secondary-container": "#dfdfe4",
+            "surface-container-lowest": "#ffffff",
+            "on-primary-fixed": "#001a41",
+            "surface-container-low": "#f6f3f2",
+            "on-tertiary": "#ffffff",
+            "inverse-surface": "#313030",
+            "secondary-fixed": "#e2e2e7",
+            "error-container": "#ffdad6",
+            "primary": "#0058bc",
+            "surface-tint": "#005bc1",
+            "background": "#fcf9f8",
+            "on-surface-variant": "#414755",
+            "inverse-primary": "#adc6ff",
+            "primary-fixed": "#d8e2ff",
+            "surface-container-high": "#eae7e7",
+            "on-tertiary-container": "#fdfcff",
+            "on-secondary-container": "#616267",
+            "on-tertiary-fixed-variant": "#45474b",
+            "on-secondary-fixed-variant": "#45474b",
+            "on-primary-container": "#fefcff",
+            "surface": "#fcf9f8"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.25rem",
+            "lg": "0.5rem",
+            "xl": "0.75rem",
+            "full": "9999px"
+          },
+          "spacing": {
+            "space-xxs": "0.25rem",
+            "space-lg": "1.5rem",
+            "space-xs": "0.5rem",
+            "item-gap": "8px",
+            "space-md": "1rem",
+            "panel-padding": "12px",
+            "space-sm": "0.75rem"
+          },
+          "fontFamily": {
+            "mono-sm": ["JetBrains Mono"],
+            "label-md": ["Inter"],
+            "headline-sm": ["Inter"],
+            "body-md": ["Inter"],
+            "body-sm": ["Inter"]
+          },
+          "fontSize": {
+            "mono-sm": ["11px", {"lineHeight": "14px", "letterSpacing": "0em", "fontWeight": "400"}],
+            "label-md": ["12px", {"lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500"}],
+            "headline-sm": ["15px", {"lineHeight": "20px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+            "body-md": ["13px", {"lineHeight": "18px", "letterSpacing": "0em", "fontWeight": "400"}],
+            "body-sm": ["11px", {"lineHeight": "14px", "letterSpacing": "0.01em", "fontWeight": "400"}]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    body {
+      background-color: transparent;
+      overflow: hidden;
+      font-family: 'Inter', sans-serif;
+    }
+    
+    .panel-container {
+      width: 400px;
+      height: auto;
+      max-height: 600px;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0px 4px 12px rgba(0, 0, 0, 0.05);
+      border: 1px solid rgba(229, 229, 234, 1);
+    }
+
+    .glass {
+      background: rgba(252, 249, 248, 0.75);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+
+    .material-symbols-outlined {
+      font-size: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    @keyframes pulse-blue {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(1.1); }
+    }
+    .pulse-blue {
+      animation: pulse-blue 2s infinite;
+    }
+
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 4px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #E5E5EA;
+      border-radius: 10px;
+    }
+
+    .inset-divider {
+      margin-left: 12px;
+      margin-right: 12px;
+      height: 0.5px;
+      background-color: #E5E5EA;
+    }
+  </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4">
+<div class="panel-container glass flex flex-col bg-surface/75">
+<!-- Header: TopAppBar -->
+<header class="flex justify-between items-center w-full px-space-md py-space-xs bg-surface/75 backdrop-blur-xl shadow-[0px_4px_12px_rgba(0,0,0,0.05)] docked full-width top-0 z-10">
+<div class="flex flex-col gap-0.5">
+<h1 class="font-headline-sm text-headline-sm font-semibold text-on-surface">Compagnion</h1>
+<div class="flex items-center gap-2">
+<span class="text-[10px] font-medium text-on-surface-variant flex items-center gap-1">
+<span class="material-symbols-outlined text-[12px] text-primary" data-icon="notifications">notifications</span>
+            Alerts ON
+          </span>
+</div>
+</div>
+<div class="flex items-center gap-space-sm">
+<!-- 5h Window Gauge -->
+<div class="flex flex-col items-center">
+<div class="relative flex items-center justify-center w-8 h-8">
+<svg class="w-full h-full -rotate-90">
+<circle cx="16" cy="16" fill="none" r="14" stroke="#E5E5EA" stroke-width="2"></circle>
+<circle cx="16" cy="16" fill="none" r="14" stroke="#0058bc" stroke-dasharray="87.96" stroke-dashoffset="57.17" stroke-width="2"></circle>
+</svg>
+<span class="absolute font-mono-sm text-[8px] text-on-surface">35%</span>
+</div>
+<span class="text-[9px] font-medium text-on-surface-variant mt-1">5h Rem.</span>
+</div>
+<!-- Weekly Gauge -->
+<div class="flex flex-col items-center">
+<div class="relative flex items-center justify-center w-8 h-8">
+<svg class="w-full h-full -rotate-90">
+<circle cx="16" cy="16" fill="none" r="14" stroke="#E5E5EA" stroke-width="2"></circle>
+<circle cx="16" cy="16" fill="none" r="14" stroke="#0058bc" stroke-dasharray="87.96" stroke-dashoffset="77.4" stroke-width="2"></circle>
+</svg>
+<span class="absolute font-mono-sm text-[8px] text-on-surface">12%</span>
+</div>
+<span class="text-[9px] font-medium text-on-surface-variant mt-1">Week</span>
+</div>
+</div>
+</header>
+<!-- Main Content: Session List -->
+<main class="flex-1 overflow-y-auto custom-scrollbar px-space-md py-space-sm space-y-item-gap">
+<!-- Session 1 -->
+<div class="group relative flex flex-col p-space-sm bg-orange-50/50 border border-orange-100 rounded-xl cursor-pointer hover:bg-orange-100/50 transition-colors duration-150 active:scale-[0.98]">
+<div class="flex justify-between items-start mb-2">
+<div class="flex flex-col">
+<span class="font-headline-sm text-headline-sm text-on-surface">Fixing Auth Bug</span>
+<span class="font-mono-sm text-mono-sm text-on-surface-variant">backend-api <span class="text-outline-variant">/</span> feature/auth-refresh</span>
+</div>
+<div class="flex flex-col items-end">
+<span class="text-[10px] font-bold text-orange-600 bg-orange-100 px-1.5 py-0.5 rounded uppercase">Waiting for you</span>
+<span class="font-mono-sm text-mono-sm text-on-surface-variant mt-1">14m elapsed</span>
+</div>
+</div>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<div class="w-24 h-1.5 bg-surface-container rounded-full overflow-hidden">
+<div class="bg-orange-400 h-full w-[82%]"></div>
+</div>
+<span class="font-mono-sm text-mono-sm text-orange-700">82% Context</span>
+</div>
+<span class="bg-primary-container/10 text-primary font-label-md text-label-md px-2 py-0.5 rounded-full flex items-center gap-1">
+<span class="material-symbols-outlined text-[10px]" data-icon="hub">hub</span>
+            1 sub-agent
+          </span>
+</div>
+<!-- Terminal Hint (Hover Only) -->
+<div class="absolute right-3 bottom-3 opacity-0 group-hover:opacity-100 transition-opacity">
+<span class="material-symbols-outlined text-primary" data-icon="terminal">terminal</span>
+</div>
+</div>
+<div class="inset-divider opacity-50"></div>
+<!-- Session 2 -->
+<div class="group relative flex flex-col p-space-sm bg-transparent rounded-xl cursor-pointer hover:bg-secondary-container/50 transition-colors duration-150 active:scale-[0.98]">
+<div class="flex justify-between items-start mb-2">
+<div class="flex flex-col">
+<div class="flex items-center gap-2">
+<span class="font-headline-sm text-headline-sm text-on-surface">Refactoring Components</span>
+<span class="pulse-blue material-symbols-outlined text-primary text-[14px]" data-icon="play_circle" style="font-variation-settings: 'FILL' 1;">play_circle</span>
+</div>
+<span class="font-mono-sm text-mono-sm text-on-surface-variant">frontend-app <span class="text-outline-variant">/</span> main</span>
+</div>
+<div class="flex flex-col items-end">
+<span class="text-[10px] font-bold text-primary px-1.5 py-0.5 rounded uppercase">Working</span>
+<span class="font-mono-sm text-mono-sm text-on-surface-variant mt-1">8m elapsed</span>
+</div>
+</div>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<div class="w-24 h-1.5 bg-surface-container rounded-full overflow-hidden">
+<div class="bg-primary h-full w-[45%]"></div>
+</div>
+<span class="font-mono-sm text-mono-sm text-on-surface-variant">45% Context</span>
+</div>
+</div>
+<div class="absolute right-3 bottom-3 opacity-0 group-hover:opacity-100 transition-opacity">
+<span class="material-symbols-outlined text-primary" data-icon="terminal">terminal</span>
+</div>
+</div>
+<!-- Session 3 -->
+<div class="group relative flex flex-col p-space-sm bg-transparent rounded-xl cursor-pointer hover:bg-secondary-container/50 transition-colors duration-150 active:scale-[0.98]">
+<div class="flex justify-between items-start mb-2">
+<div class="flex flex-col">
+<span class="font-headline-sm text-headline-sm text-on-surface">Writing Unit Tests</span>
+<span class="font-mono-sm text-mono-sm text-on-surface-variant">utils-lib <span class="text-outline-variant">/</span> test-coverage</span>
+</div>
+<div class="flex flex-col items-end">
+<span class="text-[10px] font-bold text-primary px-1.5 py-0.5 rounded uppercase">Working</span>
+<span class="font-mono-sm text-mono-sm text-on-surface-variant mt-1">3m elapsed</span>
+</div>
+</div>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<div class="w-24 h-1.5 bg-surface-container rounded-full overflow-hidden">
+<div class="bg-primary h-full w-[12%]"></div>
+</div>
+<span class="font-mono-sm text-mono-sm text-on-surface-variant">12% Context</span>
+</div>
+</div>
+<div class="absolute right-3 bottom-3 opacity-0 group-hover:opacity-100 transition-opacity">
+<span class="material-symbols-outlined text-primary" data-icon="terminal">terminal</span>
+</div>
+</div>
+<!-- Session 4 -->
+<div class="group relative flex flex-col p-space-sm bg-transparent rounded-xl cursor-pointer hover:bg-secondary-container/50 transition-colors duration-150 active:scale-[0.98]">
+<div class="flex justify-between items-start mb-2">
+<div class="flex flex-col">
+<span class="font-headline-sm text-headline-sm text-on-surface opacity-60">Initial Setup</span>
+<span class="font-mono-sm text-mono-sm text-on-surface-variant opacity-60">new-project <span class="text-outline-variant">/</span> develop</span>
+</div>
+<div class="flex flex-col items-end">
+<span class="text-[10px] font-bold text-outline px-1.5 py-0.5 rounded uppercase">Idle</span>
+<span class="font-mono-sm text-mono-sm text-on-surface-variant mt-1">45m ago</span>
+</div>
+</div>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2 opacity-40">
+<div class="w-24 h-1.5 bg-surface-container rounded-full overflow-hidden">
+<div class="bg-outline h-full w-[5%]"></div>
+</div>
+<span class="font-mono-sm text-mono-sm text-on-surface-variant">5% Context</span>
+</div>
+</div>
+<div class="absolute right-3 bottom-3 opacity-0 group-hover:opacity-100 transition-opacity">
+<span class="material-symbols-outlined text-primary" data-icon="terminal">terminal</span>
+</div>
+</div>
+</main>
+<!-- Footer -->
+<footer class="flex justify-between items-center w-full px-space-md py-space-sm bg-transparent border-t border-outline-variant/30 docked full-width bottom-0">
+<div class="flex flex-col">
+<span class="font-body-sm text-body-sm text-on-surface-variant">Last refresh: Just now</span>
+</div>
+<div class="flex items-center gap-2">
+<button class="p-1.5 rounded-lg hover:bg-secondary-container/50 transition-colors active:scale-95 duration-150 group">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary" data-icon="refresh">refresh</span>
+</button>
+<button class="p-1.5 rounded-lg hover:bg-secondary-container/50 transition-colors active:scale-95 duration-150 group">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary" data-icon="settings">settings</span>
+</button>
+<button class="p-1.5 rounded-lg hover:bg-error-container/50 transition-colors active:scale-95 duration-150 group">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-error" data-icon="power_settings_new">power_settings_new</span>
+</button>
+</div>
+</footer>
+</div>
+<script>
+    // Micro-interactions and simulation logic
+    document.querySelectorAll('.cursor-pointer').forEach(item => {
+      item.addEventListener('click', function() {
+        // Mock "jump to terminal" animation
+        this.style.transform = 'scale(0.95)';
+        setTimeout(() => {
+          this.style.transform = 'scale(1)';
+        }, 150);
+      });
+    });
+
+    // Simple time update simulation
+    let minutesSinceRefresh = 0;
+    const footerText = document.querySelector('footer span');
+    setInterval(() => {
+      minutesSinceRefresh++;
+      if (minutesSinceRefresh < 60) {
+        footerText.textContent = `Last refresh: ${minutesSinceRefresh}m ago`;
+      } else {
+        footerText.textContent = `Last refresh: Just now`;
+        minutesSinceRefresh = 0;
+      }
+    }, 60000);
+  </script>
+</body></html>
