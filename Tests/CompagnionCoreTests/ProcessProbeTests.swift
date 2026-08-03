@@ -40,4 +40,27 @@ final class ProcessProbeTests: XCTestCase {
         }
         XCTAssertNotNil(started, "sysctl reads start times across users on macOS")
     }
+
+    /// The regression guard for fail-open. When `kill` confirms a pid but the
+    /// start-time lookup yields nothing, the probe must still say alive —
+    /// collapsing that to `.dead` is precisely what hid a live session. No real
+    /// pid can produce this state, so the lookup is injected. Revert
+    /// `state(of:startTime:)`'s last line to a `guard let … else { .dead }` and
+    /// this is the test that fails.
+    func testConfirmedPidWithNoStartTimeStaysAlive() {
+        let me = pid_t(ProcessInfo.processInfo.processIdentifier)
+        XCTAssertEqual(
+            SystemProcessProbe.state(of: me, startTime: { _ in nil }),
+            .alive(started: nil)
+        )
+    }
+
+    /// The injected seam must not weaken the guards in front of it: a
+    /// non-positive pid is dead no matter what the lookup would return.
+    func testNonPositivePidStaysDeadEvenWithAStartTimeAvailable() {
+        XCTAssertEqual(
+            SystemProcessProbe.state(of: 0, startTime: { _ in Date() }),
+            .dead
+        )
+    }
 }

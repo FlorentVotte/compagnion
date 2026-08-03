@@ -19,6 +19,15 @@ public enum ProcessState: Equatable, Sendable {
 /// idiom already used by `HostAppResolver.parentPid(of:)`.
 public enum SystemProcessProbe {
     public static func state(of pid: pid_t) -> ProcessState {
+        state(of: pid, startTime: startTime(of:))
+    }
+
+    /// The start-time lookup is injected so the fail-open contract is testable.
+    /// No real pid can be alive while the kernel withholds its start time —
+    /// `sysctl` succeeds whenever the process exists — so without this seam,
+    /// changing the last line back to `guard let started … else { .dead }`
+    /// would pass the entire suite while silently hiding live sessions again.
+    static func state(of pid: pid_t, startTime: (pid_t) -> Date?) -> ProcessState {
         // Non-positive pids have broadcast semantics in `kill`, so they would
         // spuriously succeed. They are never real session owners.
         guard pid > 0 else { return .dead }
@@ -27,7 +36,7 @@ public enum SystemProcessProbe {
         // `kill` has established the process exists. A missing start time makes
         // pid reuse unjudgeable, not the process dead — pass the uncertainty up
         // rather than converting it into a hide.
-        return .alive(started: startTime(of: pid))
+        return .alive(started: startTime(pid))
     }
 
     /// `sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID, pid)` -> `kp_proc.p_starttime`.
