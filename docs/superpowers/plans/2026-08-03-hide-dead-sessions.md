@@ -46,7 +46,7 @@ Everything else follows the spec exactly. `Visibility` keeps its spec name but c
 | `Sources/CompagnionCore/DaemonRoster.swift` (create) | `RosterWorker`, `Roster`, `Roster.decode(_:)`, `DaemonRoster.load()`, UTC `procStart` parsing |
 | `Sources/CompagnionCore/Staleness.swift` (create) | `SessionFacts`, `Visibility`, `Staleness.visibility(of:roster:now:probe:)` — pure |
 | `Sources/Compagnion/SessionMonitor.swift` (modify) | compute `hidden` off-actor; filter in `rebuild` before `liveIDs` |
-| `Tests/CompagnionCoreTests/ProcessProbeTests.swift` (create) | live / reaped / non-positive pids |
+| `Tests/CompagnionCoreTests/ProcessProbeTests.swift` (create) | live / reaped / non-positive / cross-user pids, and the fail-open seam |
 | `Tests/CompagnionCoreTests/DaemonRosterTests.swift` (create) | decode, UTC parse, malformed bytes, unreadable path |
 | `Tests/CompagnionCoreTests/StalenessTests.swift` (create) | every policy branch + the real `50ac7c18` fixture |
 
@@ -138,6 +138,29 @@ final class ProcessProbeTests: XCTestCase {
         }
         XCTAssertNotNil(started, "sysctl reads start times across users on macOS")
     }
+
+    /// The regression guard for fail-open. When `kill` confirms a pid but the
+    /// start-time lookup yields nothing, the probe must still say alive —
+    /// collapsing that to `.dead` is precisely what hid a live session. No real
+    /// pid can produce this state, so the lookup is injected. Revert
+    /// `state(of:startTime:)`'s last line to a `guard let … else { .dead }` and
+    /// this is the test that fails.
+    func testConfirmedPidWithNoStartTimeStaysAlive() {
+        let me = pid_t(ProcessInfo.processInfo.processIdentifier)
+        XCTAssertEqual(
+            SystemProcessProbe.state(of: me, startTime: { _ in nil }),
+            .alive(started: nil)
+        )
+    }
+
+    /// The injected seam must not weaken the guards in front of it: a
+    /// non-positive pid is dead no matter what the lookup would return.
+    func testNonPositivePidStaysDeadEvenWithAStartTimeAvailable() {
+        XCTAssertEqual(
+            SystemProcessProbe.state(of: 0, startTime: { _ in Date() }),
+            .dead
+        )
+    }
 }
 ```
 
@@ -172,6 +195,15 @@ public enum ProcessState: Equatable, Sendable {
 /// idiom already used by `HostAppResolver.parentPid(of:)`.
 public enum SystemProcessProbe {
     public static func state(of pid: pid_t) -> ProcessState {
+        state(of: pid, startTime: startTime(of:))
+    }
+
+    /// The start-time lookup is injected so the fail-open contract is testable.
+    /// No real pid can be alive while the kernel withholds its start time —
+    /// `sysctl` succeeds whenever the process exists — so without this seam,
+    /// changing the last line back to `guard let started … else { .dead }`
+    /// would pass the entire suite while silently hiding live sessions again.
+    static func state(of pid: pid_t, startTime: (pid_t) -> Date?) -> ProcessState {
         // Non-positive pids have broadcast semantics in `kill`, so they would
         // spuriously succeed. They are never real session owners.
         guard pid > 0 else { return .dead }
@@ -180,7 +212,7 @@ public enum SystemProcessProbe {
         // `kill` has established the process exists. A missing start time makes
         // pid reuse unjudgeable, not the process dead — pass the uncertainty up
         // rather than converting it into a hide.
-        return .alive(started: startTime(of: pid))
+        return .alive(started: startTime(pid))
     }
 
     /// `sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID, pid)` -> `kp_proc.p_starttime`.
@@ -204,7 +236,7 @@ public enum SystemProcessProbe {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter ProcessProbeTests`
-Expected: PASS, 4 tests.
+Expected: PASS, 6 tests.
 
 - [ ] **Step 6: Verify the app still builds and bundles**
 
@@ -742,7 +774,7 @@ Expected: PASS, 15 tests.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`
-Expected: PASS, 26 tests across three suites (4 probe + 7 roster + 15 staleness; the roster suite reports one skip on a UTC machine).
+Expected: PASS, 28 tests across three suites (6 probe + 7 roster + 15 staleness; the roster suite reports one skip on a UTC machine).
 
 - [ ] **Step 6: Commit**
 
