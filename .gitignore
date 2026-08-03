@@ -4,3 +4,5 @@ Compagnion.app/
 dist/
 .DS_Store
 .stitch/
+.claude/worktrees/
+.superpowers/
