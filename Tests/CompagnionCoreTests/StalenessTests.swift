@@ -167,6 +167,39 @@ final class StalenessTests: XCTestCase {
         XCTAssertEqual(result, .show)
     }
 
+    // MARK: - The two tolerances are not interchangeable
+
+    /// 30s of drift sits inside the interactive band (60s) and outside the
+    /// background one (2s), so this pair is what pins each branch to its own
+    /// constant. Swap the two between branches and both of these fail while
+    /// every other test in the suite still passes.
+    func testInteractiveToleratesDriftThatWouldCondemnABackgroundAgent() {
+        let started = now.addingTimeInterval(-600)
+        let result = Staleness.visibility(
+            of: facts(pid: 1789, startedAt: started.addingTimeInterval(30)),
+            roster: nil, now: now, probe: alive(started)
+        )
+        XCTAssertEqual(result, .show)
+    }
+
+    /// The mirror image: the same 30s measured against a roster `procStart` is
+    /// well beyond the ±2s process-clock band, so the agent must be hidden.
+    func testBackgroundRejectsDriftThatWouldPassForInteractive() {
+        var components = DateComponents()
+        components.year = 2026; components.month = 7; components.day = 8
+        components.hour = 14; components.minute = 25; components.second = 15
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let procStart = calendar.date(from: components)!
+
+        let result = Staleness.visibility(
+            of: facts(shortId: "50ac7c18", startedAt: now.addingTimeInterval(-2_200_000)),
+            roster: roster(pid: 21249, procStart: "Wed Jul  8 14:25:15 2026"),
+            now: now, probe: alive(procStart.addingTimeInterval(30))
+        )
+        XCTAssertTrue(isHidden(result))
+    }
+
     // MARK: - The observed regression
 
     /// The real 26-day-old phantom: background agent blocked, roster worker
