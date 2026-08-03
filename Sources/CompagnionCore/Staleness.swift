@@ -33,9 +33,6 @@ public enum Visibility: Equatable, Sendable {
 /// Fails open everywhere — a session is hidden only when its death is
 /// affirmatively established.
 public enum Staleness {
-    /// A job written to `jobs/` but not yet registered in the roster must not
-    /// be mistaken for a dead one.
-    public static let dispatchGrace: TimeInterval = 60
     /// `procStart` is the process clock itself, so the band is tight.
     public static let procStartTolerance: TimeInterval = 2
     /// `startedAt` marks when the *session* began, about a second after its
@@ -45,7 +42,6 @@ public enum Staleness {
     public static func visibility(
         of facts: SessionFacts,
         roster: Roster?,
-        now: Date,
         probe: (pid_t) -> ProcessState
     ) -> Visibility {
         // A pid in the poll is direct evidence; no private file needed.
@@ -54,6 +50,7 @@ public enum Staleness {
                 pid: pid,
                 against: facts.startedAt,
                 tolerance: startedAtTolerance,
+                laterOnly: true,
                 label: "pid \(pid)",
                 probe: probe
             )
@@ -62,26 +59,34 @@ public enum Staleness {
         // Background agents: the roster is the only place a pid exists.
         guard let shortId = facts.shortId else { return .show }
         guard let roster else { return .show }
-        if let startedAt = facts.startedAt, now.timeIntervalSince(startedAt) < dispatchGrace {
-            return .show
-        }
-        guard let worker = roster.workers[shortId] else {
-            return .hide(reason: "roster has no worker entry")
-        }
+        // A missing entry is absence of evidence, not evidence of death —
+        // roster generations drop entries for older jobs, so silence here would
+        // condemn a live worker whose entry was merely forgotten. See the
+        // spec's "Rejected: hiding on roster silence".
+        guard let worker = roster.workers[shortId] else { return .show }
         return judge(
             pid: worker.pid,
             against: worker.procStartDate,
             tolerance: procStartTolerance,
+            laterOnly: false,
             label: "roster pid \(worker.pid)",
             probe: probe
         )
     }
 
     /// Shared tail: a live pid still has to have started when the record says.
+    ///
+    /// `laterOnly` picks the comparison. A recycled pid always belongs to a
+    /// process that started *later* than the record, and on the interactive
+    /// path the reverse is legitimate — a long-lived `claude` process beginning
+    /// a new session — so only the later direction condemns. On the background
+    /// path `procStart` is the same process's own recorded start, so drift
+    /// either way means the record does not describe this process.
     private static func judge(
         pid: pid_t,
         against expectedStart: Date?,
         tolerance: TimeInterval,
+        laterOnly: Bool,
         label: String,
         probe: (pid_t) -> ProcessState
     ) -> Visibility {
@@ -89,12 +94,17 @@ public enum Staleness {
         case .dead:
             return .hide(reason: "\(label) is not running")
         case .alive(let started):
-            // Cannot judge reuse without both a start time for the live process
-            // and a reference point to compare it against, so show.
+            // No start time for the live process, no reference point, or an
+            // unparseable one — cannot judge reuse, so show.
             guard let started, let expectedStart else { return .show }
-            let drift = abs(started.timeIntervalSince(expectedStart))
-            guard drift > tolerance else { return .show }
-            return .hide(reason: "\(label) started \(Int(drift))s from its record — reused pid")
+            let drift = started.timeIntervalSince(expectedStart)
+            let excess = laterOnly ? drift : abs(drift)
+            guard excess > tolerance else { return .show }
+            // %.0f rather than Int(): converting a non-finite or absurd
+            // interval would trap and take down the poll task.
+            return .hide(
+                reason: "\(label) started \(String(format: "%.0f", excess))s from its record — reused pid"
+            )
         }
     }
 }

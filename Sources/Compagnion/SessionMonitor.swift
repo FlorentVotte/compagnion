@@ -250,7 +250,7 @@ final class SessionMonitor: ObservableObject {
             let hidden: Set<String>
             if case .success(let sessions) = result {
                 enrichment = Self.enrich(sessions: sessions, using: enricher, windowSizes: sizes, fallbackSize: fallbackSize)
-                hidden = Self.hiddenIDs(in: sessions, now: Date())
+                hidden = Self.hiddenIDs(in: sessions)
             } else {
                 enrichment = Enrichment()
                 hidden = []
@@ -377,8 +377,14 @@ final class SessionMonitor: ObservableObject {
     /// Ids of sessions whose owning process is provably gone. Runs off the main
     /// actor: reads the daemon roster and probes pids. Hides nothing unless
     /// death is established — see `Staleness`.
-    private nonisolated static func hiddenIDs(in sessions: [ClaudeSession], now: Date) -> Set<String> {
+    private nonisolated static func hiddenIDs(in sessions: [ClaudeSession]) -> Set<String> {
         let roster = DaemonRoster.load()
+        // `proto` is a required key, so a rename or removal fails the whole
+        // decode: nothing is hidden and the phantom-card bug returns with no
+        // other signal. This line is the only announcement of a stale decoder.
+        if let roster, roster.proto != 1 {
+            monitorLog("roster proto is \(roster.proto), not 1 — the decoder may be stale")
+        }
         var hidden: Set<String> = []
         for session in sessions {
             let facts = SessionFacts(
@@ -390,7 +396,6 @@ final class SessionMonitor: ObservableObject {
             guard case .hide(let reason) = Staleness.visibility(
                 of: facts,
                 roster: roster,
-                now: now,
                 probe: SystemProcessProbe.state(of:)
             ) else { continue }
             hidden.insert(session.id)

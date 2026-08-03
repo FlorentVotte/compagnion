@@ -39,7 +39,7 @@ final class StalenessTests: XCTestCase {
         let started = now.addingTimeInterval(-600)
         let result = Staleness.visibility(
             of: facts(pid: 1789, startedAt: started.addingTimeInterval(1)),
-            roster: nil, now: now, probe: alive(started)
+            roster: nil, probe: alive(started)
         )
         XCTAssertEqual(result, .show)
     }
@@ -47,7 +47,7 @@ final class StalenessTests: XCTestCase {
     func testInteractiveWithDeadPidHides() {
         let result = Staleness.visibility(
             of: facts(pid: 1789, startedAt: now.addingTimeInterval(-600)),
-            roster: nil, now: now, probe: dead
+            roster: nil, probe: dead
         )
         XCTAssertTrue(isHidden(result))
     }
@@ -56,15 +56,27 @@ final class StalenessTests: XCTestCase {
         // Process started an hour after the session claims to have begun.
         let result = Staleness.visibility(
             of: facts(pid: 1789, startedAt: now.addingTimeInterval(-4200)),
-            roster: nil, now: now, probe: alive(now.addingTimeInterval(-600))
+            roster: nil, probe: alive(now.addingTimeInterval(-600))
         )
         XCTAssertTrue(isHidden(result))
+    }
+
+    /// A session that began well after its host process started is not pid
+    /// reuse — a long-lived `claude` process can begin a new session. Only a
+    /// process that started *later* than the record indicates reuse. Revert
+    /// the check to `abs(...)` and this is the test that fails.
+    func testInteractiveShowsWhenTheProcessPredatesTheSession() {
+        let result = Staleness.visibility(
+            of: facts(pid: 1789, startedAt: now.addingTimeInterval(-600)),
+            roster: nil, probe: alive(now.addingTimeInterval(-7200))
+        )
+        XCTAssertEqual(result, .show)
     }
 
     func testInteractiveWithNoStartedAtShowsRatherThanGuessing() {
         let result = Staleness.visibility(
             of: facts(pid: 1789, startedAt: nil),
-            roster: nil, now: now, probe: alive(now.addingTimeInterval(-600))
+            roster: nil, probe: alive(now.addingTimeInterval(-600))
         )
         XCTAssertEqual(result, .show)
     }
@@ -75,7 +87,7 @@ final class StalenessTests: XCTestCase {
     func testAliveWithUnknownStartTimeShows() {
         let result = Staleness.visibility(
             of: facts(pid: 1789, startedAt: now.addingTimeInterval(-4200)),
-            roster: nil, now: now, probe: { _ in .alive(started: nil) }
+            roster: nil, probe: { _ in .alive(started: nil) }
         )
         XCTAssertEqual(result, .show)
     }
@@ -85,25 +97,28 @@ final class StalenessTests: XCTestCase {
     func testBackgroundShowsWhenRosterIsUnreadable() {
         let result = Staleness.visibility(
             of: facts(shortId: "50ac7c18", startedAt: now.addingTimeInterval(-2_200_000)),
-            roster: nil, now: now, probe: dead
+            roster: nil, probe: dead
         )
         XCTAssertEqual(result, .show)
     }
 
-    func testBackgroundWithNoWorkerEntryHides() {
+    /// A missing worker entry is absence of evidence, not evidence of death.
+    /// Roster generations drop entries for older jobs, so hiding here would
+    /// condemn a live worker whose entry was merely forgotten.
+    func testBackgroundWithNoWorkerEntryShows() {
         let result = Staleness.visibility(
             of: facts(shortId: "50ac7c18", startedAt: now.addingTimeInterval(-2_200_000)),
             roster: roster(pid: 1, procStart: "Wed Jul  8 14:25:15 2026", key: "someone-else"),
-            now: now, probe: dead
+            probe: dead
         )
-        XCTAssertTrue(isHidden(result))
+        XCTAssertEqual(result, .show)
     }
 
     func testBackgroundWithDeadRosterPidHides() {
         let result = Staleness.visibility(
             of: facts(shortId: "50ac7c18", startedAt: now.addingTimeInterval(-2_200_000)),
             roster: roster(pid: 21249, procStart: "Wed Jul  8 14:25:15 2026"),
-            now: now, probe: dead
+            probe: dead
         )
         XCTAssertTrue(isHidden(result))
     }
@@ -119,7 +134,7 @@ final class StalenessTests: XCTestCase {
         let result = Staleness.visibility(
             of: facts(shortId: "50ac7c18", startedAt: now.addingTimeInterval(-2_200_000)),
             roster: roster(pid: 21249, procStart: "Wed Jul  8 14:25:15 2026"),
-            now: now, probe: alive(procStart.addingTimeInterval(1))
+            probe: alive(procStart.addingTimeInterval(1))
         )
         XCTAssertEqual(result, .show)
     }
@@ -128,7 +143,7 @@ final class StalenessTests: XCTestCase {
         let result = Staleness.visibility(
             of: facts(shortId: "50ac7c18", startedAt: now.addingTimeInterval(-2_200_000)),
             roster: roster(pid: 21249, procStart: "Wed Jul  8 14:25:15 2026"),
-            now: now, probe: alive(now.addingTimeInterval(-60))
+            probe: alive(now.addingTimeInterval(-60))
         )
         XCTAssertTrue(isHidden(result))
     }
@@ -137,32 +152,25 @@ final class StalenessTests: XCTestCase {
         let result = Staleness.visibility(
             of: facts(shortId: "50ac7c18", startedAt: now.addingTimeInterval(-2_200_000)),
             roster: roster(pid: 21249, procStart: "not a date"),
-            now: now, probe: alive(now.addingTimeInterval(-60))
+            probe: alive(now.addingTimeInterval(-60))
         )
         XCTAssertEqual(result, .show)
     }
 
-    func testFreshlyDispatchedJobShowsDespiteNoWorkerEntry() {
+    /// A missing entry shows whatever the job's age — age is irrelevant now
+    /// that roster silence never hides.
+    func testFreshlyDispatchedJobWithNoWorkerEntryShows() {
         let result = Staleness.visibility(
             of: facts(shortId: "brand-new", startedAt: now.addingTimeInterval(-5)),
             roster: roster(pid: 1, procStart: "Wed Jul  8 14:25:15 2026"),
-            now: now, probe: dead
+            probe: dead
         )
         XCTAssertEqual(result, .show)
-    }
-
-    func testJobOlderThanTheGraceIsJudged() {
-        let result = Staleness.visibility(
-            of: facts(shortId: "brand-new", startedAt: now.addingTimeInterval(-61)),
-            roster: roster(pid: 1, procStart: "Wed Jul  8 14:25:15 2026"),
-            now: now, probe: dead
-        )
-        XCTAssertTrue(isHidden(result))
     }
 
     func testSessionWithNeitherPidNorShortIdShows() {
         let result = Staleness.visibility(
-            of: facts(), roster: nil, now: now, probe: dead
+            of: facts(), roster: nil, probe: dead
         )
         XCTAssertEqual(result, .show)
     }
@@ -176,8 +184,8 @@ final class StalenessTests: XCTestCase {
     func testInteractiveToleratesDriftThatWouldCondemnABackgroundAgent() {
         let started = now.addingTimeInterval(-600)
         let result = Staleness.visibility(
-            of: facts(pid: 1789, startedAt: started.addingTimeInterval(30)),
-            roster: nil, now: now, probe: alive(started)
+            of: facts(pid: 1789, startedAt: started.addingTimeInterval(-30)),
+            roster: nil, probe: alive(started)
         )
         XCTAssertEqual(result, .show)
     }
@@ -195,7 +203,7 @@ final class StalenessTests: XCTestCase {
         let result = Staleness.visibility(
             of: facts(shortId: "50ac7c18", startedAt: now.addingTimeInterval(-2_200_000)),
             roster: roster(pid: 21249, procStart: "Wed Jul  8 14:25:15 2026"),
-            now: now, probe: alive(procStart.addingTimeInterval(30))
+            probe: alive(procStart.addingTimeInterval(30))
         )
         XCTAssertTrue(isHidden(result))
     }
@@ -213,7 +221,6 @@ final class StalenessTests: XCTestCase {
                 startedAt: Date(timeIntervalSince1970: 1_783_520_714.938)
             ),
             roster: roster(pid: 21249, procStart: "Wed Jul  8 14:25:15 2026"),
-            now: now,
             probe: dead
         )
         guard case .hide(let reason) = result else {
