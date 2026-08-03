@@ -243,13 +243,17 @@ final class SessionMonitor: ObservableObject {
         let fallbackSize = defaultWindowSize
         Task.detached(priority: .utility) { [enricher] in
             let result = Self.fetchSessions(claudePath: claudePath)
+            // Both are `let`, assigned once on each branch: the closure below
+            // captures them, and capturing a `var` is an error in the Swift 6
+            // language mode. This mirrors how `enrichment` was already handled.
             let enrichment: Enrichment
-            var hidden: Set<String> = []
+            let hidden: Set<String>
             if case .success(let sessions) = result {
                 enrichment = Self.enrich(sessions: sessions, using: enricher, windowSizes: sizes, fallbackSize: fallbackSize)
                 hidden = Self.hiddenIDs(in: sessions, now: Date())
             } else {
                 enrichment = Enrichment()
+                hidden = []
             }
             await MainActor.run {
                 self.apply(result: result, enrichment: enrichment, hidden: hidden)
