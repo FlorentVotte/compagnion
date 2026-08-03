@@ -931,16 +931,18 @@ Expected: both succeed. If the compiler reports `pid_t` conversion errors, `Clau
 
 - [ ] **Step 5: Confirm no live session is hidden**
 
+Write logs under your scratchpad directory rather than `/tmp` (`SCRATCH=` it first); this environment mandates the scratchpad for temp files.
+
 This step passes on *absence* of output, so it is only meaningful if you first prove the app actually polled. A run that failed to start, or was killed before its first poll, produces the same empty result as a success. `timeout`/`gtimeout` are **not** available on this machine — run in the background, wait, then kill, and keep the **unfiltered** log:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer COMPAGNION_DEBUG=1 \
-  swift run > /tmp/step5.log 2>&1 &
+  swift run > $SCRATCH/step5.log 2>&1 &
 RUN=$!
 sleep 25            # the evented poll interval is 10s; this covers at least two
 kill $RUN 2>/dev/null; wait $RUN 2>/dev/null
-grep -ciE '\[SessionMonitor\]|\[EventListener\]' /tmp/step5.log   # must be > 0: proof it ran
-grep -i 'hiding' /tmp/step5.log                                   # must be EMPTY
+grep -ciE '\[SessionMonitor\]|\[EventListener\]' $SCRATCH/step5.log   # must be > 0: proof it ran
+grep -i 'hiding' $SCRATCH/step5.log                                   # must be EMPTY
 ```
 
 Expected: the first grep is greater than zero, proving real poll activity, and the second produces **no output** — the live interactive sessions must not be hidden. If the first grep is 0, the run never polled and the step proved nothing; investigate before continuing. If any `hiding` line names a live session, **stop and report BLOCKED**: that is a false positive, the one outcome this feature must never produce.
@@ -962,11 +964,11 @@ Then run with debug logging, again in the background with the unfiltered log kep
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer COMPAGNION_DEBUG=1 \
-  swift run > /tmp/step6.log 2>&1 &
+  swift run > $SCRATCH/step6.log 2>&1 &
 RUN=$!
 sleep 25
 kill $RUN 2>/dev/null; wait $RUN 2>/dev/null
-grep -i 'hiding' /tmp/step6.log
+grep -i 'hiding' $SCRATCH/step6.log
 ```
 
 Expected: a line `hiding 50ac7c18: roster has no worker entry` (the roster entry was removed during cleanup, so this exercises the roster-authority branch), and **no card for it in the panel**. Confirm the menu bar shows no `!` from it.
