@@ -10,6 +10,12 @@
 
 ## Global Constraints
 
+- **Every `swift` invocation must be prefixed with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.** This machine's
+  `xcode-select` points at `/Library/Developer/CommandLineTools`, which lacks the
+  `PreviewsMacros` plugin the `#Preview` macros in `Sources/Compagnion/Components/`
+  require; without the prefix `swift build` fails with 36 unrelated macro errors.
+  Shell state does not persist between tool calls, so prefix each command rather
+  than exporting once.
 - Keep `swift-tools-version:5.9`. Do **not** bump to 6.0 — that enables Swift 6 language-mode strictness, which the existing `@MainActor`/`Sendable` code has not been audited against.
 - Use **XCTest**, not swift-testing (swift-testing needs tools-version 6.0).
 - Platform floor stays `.macOS(.v14)`.
@@ -124,7 +130,7 @@ final class ProcessProbeTests: XCTestCase {
 
 - [ ] **Step 3: Run the test to verify it fails**
 
-Run: `swift test --filter ProcessProbeTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter ProcessProbeTests`
 Expected: FAIL to compile — "cannot find 'SystemProcessProbe' in scope".
 
 - [ ] **Step 4: Write the implementation**
@@ -176,12 +182,12 @@ public enum SystemProcessProbe {
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --filter ProcessProbeTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter ProcessProbeTests`
 Expected: PASS, 3 tests.
 
 - [ ] **Step 6: Verify the app still builds and bundles**
 
-Run: `swift build && ./make-app.sh`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./make-app.sh`
 Expected: both succeed. `make-app.sh` resolves the binary via `swift build --show-bin-path`, so the added targets do not affect it.
 
 - [ ] **Step 7: Commit**
@@ -297,7 +303,7 @@ final class DaemonRosterTests: XCTestCase {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --filter DaemonRosterTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter DaemonRosterTests`
 Expected: FAIL to compile — "cannot find 'Roster' in scope".
 
 - [ ] **Step 3: Write the implementation**
@@ -360,7 +366,7 @@ Note: `FileManager.contents(atPath:)` returns `Data?`, so a missing file yields 
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `swift test --filter DaemonRosterTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter DaemonRosterTests`
 Expected: PASS, 7 tests (one may report as skipped if the machine runs UTC).
 
 - [ ] **Step 5: Confirm the fixture still matches the real file**
@@ -586,7 +592,7 @@ final class StalenessTests: XCTestCase {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --filter StalenessTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter StalenessTests`
 Expected: FAIL to compile — "cannot find 'SessionFacts' in scope".
 
 - [ ] **Step 3: Write the implementation**
@@ -697,12 +703,12 @@ public enum Staleness {
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `swift test --filter StalenessTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter StalenessTests`
 Expected: PASS, 14 tests.
 
 - [ ] **Step 5: Run the whole suite**
 
-Run: `swift test`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`
 Expected: PASS, 24 tests across three suites (3 probe + 7 roster + 14 staleness; the roster suite reports one skip on a UTC machine).
 
 - [ ] **Step 6: Commit**
@@ -818,12 +824,12 @@ Leave every other line of `rebuild` untouched.
 
 - [ ] **Step 4: Build and confirm the suite still passes**
 
-Run: `swift build && swift test`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`
 Expected: both succeed. If the compiler reports `pid_t` conversion errors, `ClaudeSession.pid` is `Int?` — the `map { pid_t($0) }` in Step 1 is the conversion.
 
 - [ ] **Step 5: Confirm no live session is hidden**
 
-Run: `COMPAGNION_DEBUG=1 swift run 2>&1 | grep -i 'hiding' | head`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer COMPAGNION_DEBUG=1 swift run 2>&1 | grep -i 'hiding' | head`
 Expected: **no output** — your two live interactive sessions must not be hidden. Quit with Ctrl-C. If any line appears naming a live session, stop: that is a false positive and the tolerance or the probe is wrong.
 
 - [ ] **Step 6: Reproduce the original bug and confirm it is now hidden**
@@ -838,7 +844,7 @@ tar xzf ~/.claude/backups/jobs-50ac7c18-2026-08-03T10-36-04.tar.gz -C ~/.claude/
 Then run with debug logging:
 
 ```bash
-COMPAGNION_DEBUG=1 swift run 2>&1 | grep -i 'hiding'
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer COMPAGNION_DEBUG=1 swift run 2>&1 | grep -i 'hiding'
 ```
 
 Expected: a line `hiding 50ac7c18: roster has no worker entry` (the roster entry was removed during cleanup, so this exercises the roster-authority branch), and **no card for it in the panel**. Confirm the menu bar shows no `!` from it.
@@ -852,7 +858,7 @@ rm -rf ~/.claude/jobs/50ac7c18
 
 - [ ] **Step 7: Verify the release bundle**
 
-Run: `./make-app.sh`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./make-app.sh`
 Expected: succeeds and produces `Compagnion.app`.
 
 - [ ] **Step 8: Commit**
