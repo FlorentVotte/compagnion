@@ -22,7 +22,7 @@
 - Every failure path fails open: any throw, `nil`, parse failure, or `sysctl` error results in `.show`.
 - `procStart` strings parse with **both** `Locale(identifier: "en_US_POSIX")` **and** `TimeZone(identifier: "UTC")`. Parsing in the system zone is off by the UTC offset and would hide every live session.
 - Compagnion never writes to `~/.claude`. This work only decides what to display.
-- Tolerances, copied verbatim from the spec: `dispatchGrace = 60`, `procStartTolerance = 2`, `startedAtTolerance = 60`.
+- Tolerances, copied verbatim from the spec: `procStartTolerance = 2`, `startedAtTolerance = 60`. (`dispatchGrace` was removed in Task 5 — see there.)
 - Match existing codebase idiom: `sysctl` via `mib.withUnsafeMutableBufferPointer` (see `HostAppResolver.parentPid(of:)`), debug logging via the file-local `monitorLog`/`log` pattern gated on `COMPAGNION_DEBUG`.
 
 ## Deviation from the approved spec — read before starting
@@ -1004,3 +1004,272 @@ Spec coverage checked section by section: architecture (Tasks 1-3), policy table
 Two spec items are intentionally not implemented, both recorded above: `ClaudeSession` is **not** moved into Core (see the deviation section), and `supervisorPid` is **not** decoded (the spec already explains why).
 
 One spec limitation is worth restating for the implementer: interactive sessions are judged against `startedAt` from the poll rather than the more precise `procStart` in `~/.claude/sessions/<pid>.json`. That second file is deliberately not read.
+
+---
+
+### Task 5: Final-review fixes
+
+Findings from the whole-branch review. Tasks 1-4 are already merged into the
+branch; this task amends them. The spec has already been corrected (commits
+`7ac419e`, `1433187`) and is the authority for the *why*.
+
+**Files:**
+- Modify: `Sources/CompagnionCore/Staleness.swift`
+- Modify: `Tests/CompagnionCoreTests/StalenessTests.swift`
+- Modify: `Sources/Compagnion/SessionMonitor.swift`
+
+**Interfaces:**
+- Changed: `Staleness.visibility(of:roster:probe:)` — the `now:` parameter is
+  **removed**, because the only thing that used it was `dispatchGrace`.
+  `Staleness.dispatchGrace` is removed. Every call site must drop `now:`.
+- Unchanged: `SessionFacts`, `Visibility`, `ProcessState`, `Roster`.
+
+- [ ] **Step 1: Update the failing tests first**
+
+In `Tests/CompagnionCoreTests/StalenessTests.swift`:
+
+**(a)** Drop `now: now,` from **every** `Staleness.visibility(...)` call. Keep the
+`now` property — the tests still use it to build dates.
+
+**(b)** `testBackgroundWithNoWorkerEntryHides` → rename to
+`testBackgroundWithNoWorkerEntryShows` and invert the assertion:
+
+```swift
+    /// A missing worker entry is absence of evidence, not evidence of death.
+    /// Roster generations drop entries for older jobs, so hiding here would
+    /// condemn a live worker whose entry was merely forgotten.
+    func testBackgroundWithNoWorkerEntryShows() {
+        let result = Staleness.visibility(
+            of: facts(shortId: "50ac7c18", startedAt: now.addingTimeInterval(-2_200_000)),
+            roster: roster(pid: 1, procStart: "Wed Jul  8 14:25:15 2026", key: "someone-else"),
+            probe: dead
+        )
+        XCTAssertEqual(result, .show)
+    }
+```
+
+**(c)** `testFreshlyDispatchedJobShowsDespiteNoWorkerEntry` → rename to
+`testFreshlyDispatchedJobWithNoWorkerEntryShows`, same `.show` assertion, and
+drop `now:`. Its comment should now say age is irrelevant: a missing entry shows
+whatever the job's age.
+
+**(d)** **Delete** `testJobOlderThanTheGraceIsJudged` entirely. The behaviour it
+asserted (old job + no entry → hide) no longer exists.
+
+**(e)** Fix the drift direction in
+`testInteractiveToleratesDriftThatWouldCondemnABackgroundAgent`. It currently
+uses `started.addingTimeInterval(30)`, which produces drift of **−30 s**. Under a
+one-sided check that shows regardless of which tolerance is used, so the test
+would stop being sensitive to a swapped constant. Use `-30` so the drift is
+**+30 s**:
+
+```swift
+    func testInteractiveToleratesDriftThatWouldCondemnABackgroundAgent() {
+        let started = now.addingTimeInterval(-600)
+        let result = Staleness.visibility(
+            of: facts(pid: 1789, startedAt: started.addingTimeInterval(-30)),
+            roster: nil, probe: alive(started)
+        )
+        XCTAssertEqual(result, .show)
+    }
+```
+
+**(f)** Add the one-sidedness regression test:
+
+```swift
+    /// A session that began well after its host process started is not pid
+    /// reuse — a long-lived `claude` process can begin a new session. Only a
+    /// process that started *later* than the record indicates reuse. Revert
+    /// the check to `abs(...)` and this is the test that fails.
+    func testInteractiveShowsWhenTheProcessPredatesTheSession() {
+        let result = Staleness.visibility(
+            of: facts(pid: 1789, startedAt: now.addingTimeInterval(-600)),
+            roster: nil, probe: alive(now.addingTimeInterval(-7200))
+        )
+        XCTAssertEqual(result, .show)
+    }
+```
+
+`StalenessTests` ends at **17** tests (17 − 1 deleted + 1 added).
+
+- [ ] **Step 2: Run the tests and watch them fail**
+
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter StalenessTests`
+Expected: compile failure first (`extra argument 'now'` is gone, so the calls
+without it won't match the old signature until Step 3), then, once compiling,
+failures in `testBackgroundWithNoWorkerEntryShows` and
+`testInteractiveShowsWhenTheProcessPredatesTheSession`.
+
+- [ ] **Step 3: Apply the policy changes**
+
+Replace `Staleness`'s constants, `visibility`, and `judge` with:
+
+```swift
+public enum Staleness {
+    /// `procStart` is the process clock itself, so the band is tight.
+    public static let procStartTolerance: TimeInterval = 2
+    /// `startedAt` marks when the *session* began, about a second after its
+    /// process; a reused pid is off by far more than this.
+    public static let startedAtTolerance: TimeInterval = 60
+
+    public static func visibility(
+        of facts: SessionFacts,
+        roster: Roster?,
+        probe: (pid_t) -> ProcessState
+    ) -> Visibility {
+        // A pid in the poll is direct evidence; no private file needed.
+        if let pid = facts.pid {
+            return judge(
+                pid: pid,
+                against: facts.startedAt,
+                tolerance: startedAtTolerance,
+                laterOnly: true,
+                label: "pid \(pid)",
+                probe: probe
+            )
+        }
+
+        // Background agents: the roster is the only place a pid exists.
+        guard let shortId = facts.shortId else { return .show }
+        guard let roster else { return .show }
+        // A missing entry is absence of evidence, not evidence of death —
+        // roster generations drop entries for older jobs, so silence here would
+        // condemn a live worker whose entry was merely forgotten. See the
+        // spec's "Rejected: hiding on roster silence".
+        guard let worker = roster.workers[shortId] else { return .show }
+        return judge(
+            pid: worker.pid,
+            against: worker.procStartDate,
+            tolerance: procStartTolerance,
+            laterOnly: false,
+            label: "roster pid \(worker.pid)",
+            probe: probe
+        )
+    }
+
+    /// Shared tail: a live pid still has to have started when the record says.
+    ///
+    /// `laterOnly` picks the comparison. A recycled pid always belongs to a
+    /// process that started *later* than the record, and on the interactive
+    /// path the reverse is legitimate — a long-lived `claude` process beginning
+    /// a new session — so only the later direction condemns. On the background
+    /// path `procStart` is the same process's own recorded start, so drift
+    /// either way means the record does not describe this process.
+    private static func judge(
+        pid: pid_t,
+        against expectedStart: Date?,
+        tolerance: TimeInterval,
+        laterOnly: Bool,
+        label: String,
+        probe: (pid_t) -> ProcessState
+    ) -> Visibility {
+        switch probe(pid) {
+        case .dead:
+            return .hide(reason: "\(label) is not running")
+        case .alive(let started):
+            // No start time for the live process, no reference point, or an
+            // unparseable one — cannot judge reuse, so show.
+            guard let started, let expectedStart else { return .show }
+            let drift = started.timeIntervalSince(expectedStart)
+            let excess = laterOnly ? drift : abs(drift)
+            guard excess > tolerance else { return .show }
+            // %.0f rather than Int(): converting a non-finite or absurd
+            // interval would trap and take down the poll task.
+            return .hide(
+                reason: "\(label) started \(String(format: "%.0f", excess))s from its record — reused pid"
+            )
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter StalenessTests`
+Expected: PASS, 17 tests.
+
+- [ ] **Step 5: Update the call site and add the `proto` warning**
+
+In `Sources/Compagnion/SessionMonitor.swift`, inside `hiddenIDs(in:now:)`:
+
+Drop `now: now,` from the `Staleness.visibility(...)` call. The method's own
+`now` parameter becomes unused — remove it from the signature
+(`hiddenIDs(in sessions: [ClaudeSession]) -> Set<String>`) and from its call in
+`refresh()` (`Self.hiddenIDs(in: sessions)`).
+
+Then, immediately after `let roster = DaemonRoster.load()`, add:
+
+```swift
+        // `proto` is a required key, so a rename or removal fails the whole
+        // decode: nothing is hidden and the phantom-card bug returns with no
+        // other signal. This line is the only announcement of a stale decoder.
+        if let roster, roster.proto != 1 {
+            monitorLog("roster proto is \(roster.proto), not 1 — the decoder may be stale")
+        }
+```
+
+- [ ] **Step 6: Full suite and a clean build**
+
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`
+Expected: PASS, 30 tests (6 probe + 7 roster + 17 staleness).
+
+Then confirm no new warnings, forcing a recompile:
+
+```bash
+touch Sources/Compagnion/SessionMonitor.swift Sources/CompagnionCore/Staleness.swift
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build 2>&1 \
+  | grep -E 'warning:|error:' | grep -viE 'previewsmacros|freestanding|declared here'
+```
+
+Expected: no output.
+
+- [ ] **Step 7: Verify the dead-pid branch end-to-end on the real record**
+
+This is now the *only* branch that hides a background agent, and the earlier
+verification no longer exercises it — with the roster entry absent the session
+correctly shows. Proving it requires the **original** roster, which listed the
+phantom with dead pid 21249. Both backups are needed.
+
+**Restore the current roster no matter what happens.** Take a copy first and
+verify it byte-for-byte at the end.
+
+```bash
+SCRATCH=<your scratchpad dir>
+cp ~/.claude/daemon/roster.json "$SCRATCH/roster.current.json"
+shasum -a 256 ~/.claude/daemon/roster.json | tee "$SCRATCH/roster.current.sha"
+
+cp ~/.claude/backups/roster.json.pre-compagnion-cleanup-2026-08-03T10-36-04 ~/.claude/daemon/roster.json
+tar xzf ~/.claude/backups/jobs-50ac7c18-2026-08-03T10-36-04.tar.gz -C ~/.claude/jobs
+
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer COMPAGNION_DEBUG=1 \
+  swift run > "$SCRATCH/step7.log" 2>&1 &
+RUN=$!
+sleep 25
+kill $RUN 2>/dev/null; wait $RUN 2>/dev/null
+
+grep -ciE '\[SessionMonitor\]|\[SessionEnricher\]' "$SCRATCH/step7.log"   # > 0: it polled
+grep -i 'hiding' "$SCRATCH/step7.log"
+```
+
+Expected: a proof-of-poll count above zero, and lines reading
+`hiding 50ac7c18: roster pid 21249 is not running`. **No other session may
+appear in that output** — the live interactive sessions must not be hidden.
+
+Restore and verify:
+
+```bash
+cp "$SCRATCH/roster.current.json" ~/.claude/daemon/roster.json
+rm -rf ~/.claude/jobs/50ac7c18
+shasum -a 256 -c "$SCRATCH/roster.current.sha"        # must print "OK"
+ls -d ~/.claude/jobs/50ac7c18 2>&1 | tail -1          # "No such file or directory"
+```
+
+If the checksum does not verify, stop and report — `~/.claude` must be left
+exactly as found.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add Sources/CompagnionCore/Staleness.swift Tests/CompagnionCoreTests/StalenessTests.swift Sources/Compagnion/SessionMonitor.swift
+git commit -m "Hide only on a probed pid, never on roster silence"
+```
