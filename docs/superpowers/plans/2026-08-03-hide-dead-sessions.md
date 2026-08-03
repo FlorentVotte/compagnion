@@ -871,13 +871,17 @@ Replace the body of the `Task.detached` block in `refresh()` with:
 ```swift
         Task.detached(priority: .utility) { [enricher] in
             let result = Self.fetchSessions(claudePath: claudePath)
+            // Both are `let`, assigned once on each branch: the closure below
+            // captures them, and capturing a `var` is an error in the Swift 6
+            // language mode. This mirrors how `enrichment` was already handled.
             let enrichment: Enrichment
-            var hidden: Set<String> = []
+            let hidden: Set<String>
             if case .success(let sessions) = result {
                 enrichment = Self.enrich(sessions: sessions, using: enricher, windowSizes: sizes, fallbackSize: fallbackSize)
                 hidden = Self.hiddenIDs(in: sessions, now: Date())
             } else {
                 enrichment = Enrichment()
+                hidden = []
             }
             await MainActor.run {
                 self.apply(result: result, enrichment: enrichment, hidden: hidden)
@@ -927,8 +931,19 @@ Expected: both succeed. If the compiler reports `pid_t` conversion errors, `Clau
 
 - [ ] **Step 5: Confirm no live session is hidden**
 
-Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer COMPAGNION_DEBUG=1 swift run 2>&1 | grep -i 'hiding' | head`
-Expected: **no output** — your two live interactive sessions must not be hidden. Quit with Ctrl-C. If any line appears naming a live session, stop: that is a false positive and the tolerance or the probe is wrong.
+This step passes on *absence* of output, so it is only meaningful if you first prove the app actually polled. A run that failed to start, or was killed before its first poll, produces the same empty result as a success. `timeout`/`gtimeout` are **not** available on this machine — run in the background, wait, then kill, and keep the **unfiltered** log:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer COMPAGNION_DEBUG=1 \
+  swift run > /tmp/step5.log 2>&1 &
+RUN=$!
+sleep 25            # the evented poll interval is 10s; this covers at least two
+kill $RUN 2>/dev/null; wait $RUN 2>/dev/null
+grep -ciE '\[SessionMonitor\]|\[EventListener\]' /tmp/step5.log   # must be > 0: proof it ran
+grep -i 'hiding' /tmp/step5.log                                   # must be EMPTY
+```
+
+Expected: the first grep is greater than zero, proving real poll activity, and the second produces **no output** — the live interactive sessions must not be hidden. If the first grep is 0, the run never polled and the step proved nothing; investigate before continuing. If any `hiding` line names a live session, **stop and report BLOCKED**: that is a false positive, the one outcome this feature must never produce.
 
 - [ ] **Step 6: Reproduce the original bug and confirm it is now hidden**
 
@@ -936,13 +951,22 @@ Restore the real phantom from the backups taken during investigation:
 
 ```bash
 tar xzf ~/.claude/backups/jobs-50ac7c18-2026-08-03T10-36-04.tar.gz -C ~/.claude/jobs
-/Users/florent/.local/bin/claude agents --json | grep -c 50ac7c18   # expect 1 — CLI reports it
+# Count records, not matching lines: the pretty-printed JSON mentions 50ac7c18
+# on two lines per record (`id` and `sessionId`), so `grep -c` reports 2.
+/Users/florent/.local/bin/claude agents --json | python3 -c \
+  "import json,sys; print(sum(1 for s in json.load(sys.stdin) if s.get('id') == '50ac7c18'))"
+# expect exactly 1 — the CLI still reports the dead agent
 ```
 
-Then run with debug logging:
+Then run with debug logging, again in the background with the unfiltered log kept:
 
 ```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer COMPAGNION_DEBUG=1 swift run 2>&1 | grep -i 'hiding'
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer COMPAGNION_DEBUG=1 \
+  swift run > /tmp/step6.log 2>&1 &
+RUN=$!
+sleep 25
+kill $RUN 2>/dev/null; wait $RUN 2>/dev/null
+grep -i 'hiding' /tmp/step6.log
 ```
 
 Expected: a line `hiding 50ac7c18: roster has no worker entry` (the roster entry was removed during cleanup, so this exercises the roster-authority branch), and **no card for it in the panel**. Confirm the menu bar shows no `!` from it.
@@ -951,7 +975,10 @@ Clean up again afterwards:
 
 ```bash
 rm -rf ~/.claude/jobs/50ac7c18
-/Users/florent/.local/bin/claude agents --json | grep -c 50ac7c18   # expect 0
+ls -d ~/.claude/jobs/50ac7c18 2>&1 | tail -1        # expect "No such file or directory"
+/Users/florent/.local/bin/claude agents --json | python3 -c \
+  "import json,sys; print(sum(1 for s in json.load(sys.stdin) if s.get('id') == '50ac7c18'))"
+# expect 0 — and leave ~/.claude exactly as it was found
 ```
 
 - [ ] **Step 7: Verify the release bundle**
