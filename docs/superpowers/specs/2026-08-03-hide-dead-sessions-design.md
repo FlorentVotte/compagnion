@@ -108,7 +108,7 @@ Package.swift
 
 | Unit | Purpose | Depends on |
 |---|---|---|
-| `ClaudeSession.swift` | moved out of `SessionMonitor.swift`; the decoded poll row | Foundation |
+| `Staleness.swift` | also defines `SessionFacts`, the four fields the policy needs from a polled session | Foundation |
 | `ProcessProbe.swift` | `kill(pid,0)` + `sysctl(KERN_PROC_PID)` → `.alive(started:)` / `.dead` | Darwin |
 | `DaemonRoster.swift` | `static decode(Data) throws -> Roster`, plus a thin disk loader returning `nil` on any failure | Foundation |
 | `Staleness.swift` | the pure decision | Core models only |
@@ -116,9 +116,23 @@ Package.swift
 The boundary that matters is between policy and probes. `Staleness` performs
 no I/O; it receives the roster as a value and the process probe as a closure:
 
+`ClaudeSession` stays in the executable. An earlier draft moved it into Core so
+the policy could take one directly; that was rejected during planning because it
+would require making the struct and eighteen members `public` plus a
+hand-written memberwise initialiser, and adding imports to four files. Instead
+Core defines the four facts the policy actually needs, and `SessionMonitor` maps
+across at the call site — which also keeps Core ignorant of the CLI's JSON shape.
+
 ```swift
+public struct SessionFacts: Equatable, Sendable {
+    public let id: String        // what the panel keys rows by
+    public let pid: pid_t?       // interactive only; background agents have none
+    public let shortId: String?  // how the roster keys workers
+    public let startedAt: Date?
+}
+
 public struct RosterWorker: Equatable {
-    public let pid: Int32
+    public let pid: pid_t
     public let procStart: String   // "Wed Jul  8 14:25:15 2026", UTC, English
 }
 
@@ -128,7 +142,11 @@ public struct Roster: Equatable {
 }
 
 public enum ProcessState: Equatable {
-    case alive(started: Date)
+    /// Optional: `kill` can prove a process exists while `sysctl` yields no
+    /// start time. Reporting `.dead` there would hide a live session, so
+    /// "alive, start time unknown" has to be representable — callers then
+    /// cannot judge pid reuse and must show.
+    case alive(started: Date?)
     case dead
 }
 
