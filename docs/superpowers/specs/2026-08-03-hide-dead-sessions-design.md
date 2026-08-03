@@ -60,8 +60,20 @@ settled; several overturned an earlier version of it.
 3. **The roster is not what makes the CLI list a job.** With the
    `50ac7c18` entry removed from `~/.claude/daemon/roster.json` and only
    `jobs/50ac7c18/` restored, `claude agents --json` still listed the session.
-   An earlier draft treated a missing roster entry as "unknown, show it";
-   that rule would have let this exact bug survive.
+   So the roster is a supervision record, not the listing authority.
+
+   **Correction, added after review.** An earlier version of this document
+   drew a further conclusion from that experiment — that a missing roster
+   entry must therefore mean "not running", because otherwise "this exact bug
+   would survive". That was wrong, and the preserved backup proves it: the
+   original roster (`roster.json.pre-compagnion-cleanup-2026-08-03T10-36-04`)
+   **did** contain `50ac7c18 → pid 21249, procStart "Wed Jul  8 14:25:15 2026"`.
+   The observed phantom is caught by the **dead-pid** branch. The state in
+   which the entry was absent was one the investigation itself created by
+   deleting it; no conclusion about the original bug follows from it.
+
+   A missing entry is therefore treated as **unknown → show**. See "Rejected:
+   hiding on roster silence" below for why the alternative was dropped.
 
 4. **Process argv cannot attribute a session.** Live `claude` processes have
    bare `claude` as their command line, with no session id, so enumerating
@@ -120,64 +132,96 @@ public enum ProcessState: Equatable {
     case dead
 }
 
-public enum Visibility: Equatable { case show, hide }
+public enum Visibility: Equatable {
+    case show
+    case hide(reason: String)   // the reason feeds the debug log
+}
 
 public struct Staleness {
-    public static let dispatchGrace: TimeInterval = 60
     public static let procStartTolerance: TimeInterval = 2
     public static let startedAtTolerance: TimeInterval = 60
 
     public static func visibility(
-        of session: ClaudeSession,
+        of facts: SessionFacts,
         roster: Roster?,
         now: Date,
-        probe: (Int32) -> ProcessState
+        probe: (pid_t) -> ProcessState
     ) -> Visibility
 }
 ```
 
 Every branch is therefore testable with no real processes and no filesystem.
 
-`supervisorPid` is deliberately not decoded or consulted. Treating the roster
-as authoritative about supervision already covers the case where the
-supervisor is dead — its workers are then either absent from the roster or
-have dead pids — and consulting it would add a second, independent inference
-("a worker cannot outlive its supervisor") that was not verified.
+`supervisorPid` is deliberately not decoded or consulted. Doing so would add a
+second, independent inference — "a worker cannot outlive its supervisor" — that
+was never verified, and a dead supervisor's workers already fail the pid probe.
 
 Only one private file is read: `~/.claude/daemon/roster.json`. `state.json` is
-not needed, because the CLI JSON already provides `startedAt` for background
-agents, which is what the dispatch-race grace period requires.
+not needed: nothing in the surviving policy depends on a job's own record.
 
 ## The policy
 
 ```
 session has a pid (interactive):
     probe dead                          → hide
-    alive, |start − startedAt| ≤ 60s    → show
-    alive, beyond tolerance             → hide   (pid reuse)
+    alive, start − startedAt > 60s       → hide   (pid reuse)
+    otherwise                           → SHOW
 
 session has only a short id (background):
     roster nil (unreadable/absent)      → SHOW   ← fail open
-    startedAt younger than 60s          → SHOW   ← dispatch race
-    no worker entry                     → hide
+    no worker entry                     → SHOW   ← fail open
     entry, probe dead                   → hide
-    entry, |start − procStart| > 2s     → hide   (pid reuse)
+    entry, |start − procStart| > 2s      → hide   (pid reuse)
     entry, alive and matching           → SHOW
 
 neither pid nor short id               → SHOW
 ```
 
-When `roster.json` parses, it is treated as authoritative about what is
-supervised: a job with no worker entry is taken to be not running. When it
-cannot be read or parsed at all, nothing is hidden.
+Every route to `hide` requires a pid the record itself supplied, probed and
+found gone or recycled. Absence of information — no roster, no entry, no start
+time — always shows.
 
 The two tolerances differ on purpose. `startedAt` marks when the *session*
-began, roughly a second after its process started (measured: 1.08 s), so a
-60 s band absorbs that gap without admitting a reused pid. `procStart` is the
-process clock itself, so ±2 s is appropriate.
+began, roughly a second after its process started (measured across four live
+sessions: +0.40, +0.58, +1.08, +1.26 s), so a 60 s band absorbs that gap
+without admitting a reused pid. `procStart` is the process clock itself, so
+±2 s is appropriate.
 
-The 60 s grace on freshly created jobs prevents racing a dispatch that has
-been written to `jobs/` but has not yet registered a worker in the roster.
+**The interactive comparison is one-sided.** A recycled pid always belongs to a
+process that started *later* than the session that recorded it, so only
+`start − startedAt > tolerance` indicates reuse. Using `abs()` would also
+condemn the opposite case — a session whose `startedAt` is newer than its host
+process, which happens legitimately when a long-lived `claude` process begins a
+new session — and hide a live session for it. The background comparison keeps
+`abs()`, because there `procStart` is the same process's own recorded start and
+drift in either direction means the record does not match the process.
+
+## Rejected: hiding on roster silence
+
+An earlier version of this design hid a background agent when the roster parsed
+but held no worker entry for it, treating the roster as authoritative about what
+is supervised. That rule was **dropped before merge**, for three reasons:
+
+1. It is not what fixes the observed bug. The original roster listed the
+   phantom with a dead pid (finding 3), so the dead-pid branch catches it.
+2. It is an inference, not proof, and it rested on a further unverified premise
+   — that a job the roster does not supervise cannot be running — which was
+   never tested by killing a real supervisor. The design's whole premise is
+   *hide only on proof*.
+3. It carried the entire false-positive risk. Roster entries **are** dropped
+   over time (job `51ebb748`, created 2026-06-30, has a live `jobs/` directory
+   and no roster entry), so a live worker whose entry is dropped by a roster
+   rewrite would have been hidden — and, per the corrected note on
+   self-healing below, would have stayed hidden with no visible signal.
+
+The cost of dropping it is accepted: a dead `blocked` job whose roster entry is
+eventually dropped becomes undetectable again and needs manual cleanup. That is
+strictly better than silently hiding a live session.
+
+A consequence worth recording: the 60 s `dispatchGrace` existed **only** to
+avoid hiding a freshly dispatched job that had not yet registered a worker.
+With a missing entry now showing unconditionally, the grace protects nothing and
+was removed rather than left as dead configuration.
 
 ## Integration
 
@@ -203,10 +247,25 @@ the existing `liveIDs` filters, and any held approval for it resolves
 fail-open via the existing loop over `pendingApprovals`. Both are correct — a
 dead process cannot answer a permission request.
 
-The design is self-healing. Every hook event calls `refresh()`, which
-re-probes. A session that emits a hook is by definition alive, so a hidden id
-reappears on the next poll. Nothing is permanently blacklisted, and no
-dismissal state is persisted.
+Nothing is permanently blacklisted and no dismissal state is persisted: the
+decision is recomputed from scratch on every poll, so a session reappears as
+soon as the evidence changes.
+
+**Correction, added after review.** An earlier version of this document claimed
+the design was "self-healing" on the grounds that every hook event calls
+`refresh()`, and a session that emits a hook is alive by definition, so a
+hidden id reappears on the next poll. That reasoning does not hold in general.
+Re-probing re-derives the decision from the *same* evidence; a hook event does
+not change what `kill` and `sysctl` report. Recovery therefore depends on the
+underlying evidence changing, which is a much weaker guarantee than
+"self-healing" implies.
+
+Where it does hold: every surviving `hide` route requires a probe that found a
+pid gone or recycled. If that pid is in fact alive, the very next probe says so
+and the session returns — so the surviving branches are self-correcting on their
+own terms. The claim was false specifically for the roster-silence rule, whose
+evidence (an absent entry) no amount of re-probing would revisit. That rule has
+been removed, which is what makes the weaker statement above sufficient.
 
 ## Observability
 
@@ -215,11 +274,18 @@ existing `monitorLog` (active only under `COMPAGNION_DEBUG`, matching the
 convention already used by the other components):
 
 ```
-[SessionMonitor] hiding 50ac7c18: roster has no worker entry
+[SessionMonitor] hiding 50ac7c18: roster pid 21249 is not running
 ```
 
-The reason is included, distinguishing "no worker entry" from "pid dead" and
-"procStart mismatch", so a misfire can be diagnosed from a debug run.
+The reason is included, distinguishing "pid dead" from "procStart mismatch", so
+a misfire can be diagnosed from a debug run. The session's identity comes from
+the log prefix, so the reason string does not repeat it.
+
+The roster's `proto` version is also logged when it is not 1. This matters
+because `proto` is a required key: if the daemon renames or drops it, decoding
+fails, `load()` returns `nil`, nothing is hidden, and the original bug returns
+with no other signal. The line is the only announcement that the decoder has
+gone stale.
 
 ## Error handling
 
@@ -236,11 +302,14 @@ alive shows the session.
 fixture roster bytes:
 
 - interactive: live pid with matching `startedAt` → show; dead pid → hide;
-  live pid with `startedAt` far from process start → hide
-- background: `roster` nil → show; no worker entry → hide; entry with dead
+  live pid that started well *after* its `startedAt` → hide (reuse); live pid
+  that started well *before* its `startedAt` → show (a new session inside a
+  long-lived process is not reuse)
+- background: `roster` nil → show; no worker entry → show; entry with dead
   pid → hide; entry with mismatched `procStart` → hide; entry alive and
-  matching → show; job younger than the grace period → show
+  matching → show
 - session with neither pid nor short id → show
+- probe reports alive with no start time → show, on both paths
 
 Three regressions get dedicated tests:
 
@@ -253,19 +322,32 @@ Three regressions get dedicated tests:
    worker and CLI row (auth tokens redacted) must resolve to `.hide`, and the
    same row with the worker entry pointing at a live pid must resolve to
    `.show`.
+4. **One-sidedness.** A live pid that started *before* its session's
+   `startedAt` by more than the tolerance must `.show`; only the *later*
+   direction is reuse. Reverting to `abs()` must fail this test.
 
-Manual verification closes the loop: the real stale record is preserved at
-`~/.claude/backups/jobs-50ac7c18-2026-08-03T10-36-04.tar.gz` and
-`~/.claude/backups/roster.json.pre-compagnion-cleanup-2026-08-03T10-36-04`,
-so the exact phantom can be restored and the card confirmed absent.
+Manual verification closes the loop against the true original state, which is
+preserved in two backups — both are needed, because the phantom is caught by the
+dead-pid branch and that requires its roster entry:
+
+- `~/.claude/backups/roster.json.pre-compagnion-cleanup-2026-08-03T10-36-04`
+  (contains `50ac7c18 → pid 21249`, long dead)
+- `~/.claude/backups/jobs-50ac7c18-2026-08-03T10-36-04.tar.gz`
+
+Restoring only the jobs record, as an earlier round of verification did, exercises
+nothing once the roster-silence rule is gone: with no worker entry the session
+correctly shows.
 
 ## Out of scope
 
 - **Compagnion never writes to `~/.claude`.** Reaping the underlying Claude
   Code record stays a manual, backed-up operation. The app only decides what
   to display.
-- No dismiss UI, and no persisted ignore list — the self-healing property
-  removes the need for one.
+- No dismiss UI, and no persisted ignore list. This is acceptable because every
+  surviving `hide` route rests on a probe of a pid the record supplied, so it is
+  revisited on every poll and corrects itself the moment the pid answers. It
+  would **not** have been acceptable alongside the roster-silence rule, whose
+  evidence never changed — which is part of why that rule was dropped.
 - No visual treatment for hidden sessions; hidden is hidden.
 - Jobs in terminal states (`done`, `failed`) need nothing; the CLI already
   filters them.
@@ -274,17 +356,25 @@ so the exact phantom can be restored and the card confirmed absent.
 
 ## Known limitations
 
-1. **One unproven inference.** That a job the roster does not supervise is not
-   running was not verified by dispatching a real background agent and killing
-   its supervisor. It is consistent with all observed evidence, and it is the
-   only inference available given finding 2, but it remains an inference.
+1. **A dead job whose roster entry is dropped is undetectable.** Since the
+   roster-silence rule was rejected, a `blocked` job that outlives its worker
+   entry produces a phantom card again and needs manual cleanup. Roster entries
+   demonstrably are dropped over time (`51ebb748`). This is the accepted cost of
+   never hiding on absence of evidence.
 2. **Private format dependency.** `roster.json` is undocumented and carries
-   `proto: 1`. If its shape changes, `decode` fails, everything shows, and
-   this bug silently returns. That is the safe failure direction, but it is
-   not self-announcing; the `proto` value should be logged when it is not 1.
+   `proto: 1`, a required key. If its shape changes, `decode` fails, everything
+   shows, and this bug silently returns. That is the safe failure direction. The
+   `proto` value is logged when it is not 1, which is the only announcement that
+   the decoder has gone stale — and it appears only under `COMPAGNION_DEBUG`.
 3. **Interactive sessions rely on `startedAt` rather than the more precise
    `procStart`** in `~/.claude/sessions/<pid>.json`. Reading that second
-   private file was rejected as unnecessary: a 60 s tolerance on a value
-   already present in the poll is sufficient to catch pid reuse, since a
+   private file was rejected as unnecessary: a one-sided 60 s tolerance on a
+   value already present in the poll is sufficient to catch pid reuse, since a
    reused pid implies a process that started much later than the recorded
    session.
+4. **The integration is not covered by automated tests.** There is no test
+   target for the executable, so the millisecond conversion, the id-vs-shortId
+   keying, and the filter-before-`liveIDs` ordering in `rebuild` are verified
+   only by the manual run recorded above. This follows the project's existing
+   pattern of testing pure logic and exercising the main-actor wiring by hand,
+   but it is worth knowing the next time `rebuild` is touched.
