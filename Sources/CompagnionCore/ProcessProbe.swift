@@ -4,8 +4,14 @@ import Foundation
 /// Whether a pid is running, and if so when it started. The start time is what
 /// makes pid reuse detectable: a recycled pid belongs to a process that began
 /// long after the session that recorded it.
+///
+/// `started` is optional because the two syscalls can disagree: `kill` may
+/// prove a process exists while `sysctl` returns nothing for it. Reporting
+/// `.dead` in that case would hide a session that is genuinely alive, so
+/// "alive, start time unknown" has to be representable — callers then cannot
+/// judge pid reuse and must show the session.
 public enum ProcessState: Equatable, Sendable {
-    case alive(started: Date)
+    case alive(started: Date?)
     case dead
 }
 
@@ -18,8 +24,10 @@ public enum SystemProcessProbe {
         guard pid > 0 else { return .dead }
         // EPERM means the process exists but belongs to someone else.
         guard kill(pid, 0) == 0 || errno == EPERM else { return .dead }
-        guard let started = startTime(of: pid) else { return .dead }
-        return .alive(started: started)
+        // `kill` has established the process exists. A missing start time makes
+        // pid reuse unjudgeable, not the process dead — pass the uncertainty up
+        // rather than converting it into a hide.
+        return .alive(started: startTime(of: pid))
     }
 
     /// `sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID, pid)` -> `kp_proc.p_starttime`.
