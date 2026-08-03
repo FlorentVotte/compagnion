@@ -102,11 +102,12 @@ import XCTest
 final class ProcessProbeTests: XCTestCase {
     func testLiveProcessReportsAliveWithPlausibleStart() {
         let me = pid_t(ProcessInfo.processInfo.processIdentifier)
-        guard case .alive(let started) = SystemProcessProbe.state(of: me) else {
-            return XCTFail("the test process itself must report alive")
+        guard case .alive(let started) = SystemProcessProbe.state(of: me),
+              let start = started else {
+            return XCTFail("the test process itself must report alive with a start time")
         }
-        XCTAssertLessThanOrEqual(started, Date())
-        XCTAssertLessThan(Date().timeIntervalSince(started), 3600)
+        XCTAssertLessThanOrEqual(start, Date())
+        XCTAssertLessThan(Date().timeIntervalSince(start), 3600)
     }
 
     func testReapedProcessReportsDead() throws {
