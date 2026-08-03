@@ -108,10 +108,9 @@ Package.swift
 
 | Unit | Purpose | Depends on |
 |---|---|---|
-| `Staleness.swift` | also defines `SessionFacts`, the four fields the policy needs from a polled session | Foundation |
 | `ProcessProbe.swift` | `kill(pid,0)` + `sysctl(KERN_PROC_PID)` → `.alive(started:)` / `.dead` | Darwin |
 | `DaemonRoster.swift` | `static decode(Data) throws -> Roster`, plus a thin disk loader returning `nil` on any failure | Foundation |
-| `Staleness.swift` | the pure decision | Core models only |
+| `Staleness.swift` | the pure decision, plus `SessionFacts` — the four fields it needs from a polled session | Core models only |
 
 The boundary that matters is between policy and probes. `Staleness` performs
 no I/O; it receives the roster as a value and the process probe as a closure:
@@ -155,14 +154,13 @@ public enum Visibility: Equatable {
     case hide(reason: String)   // the reason feeds the debug log
 }
 
-public struct Staleness {
+public enum Staleness {
     public static let procStartTolerance: TimeInterval = 2
     public static let startedAtTolerance: TimeInterval = 60
 
     public static func visibility(
         of facts: SessionFacts,
         roster: Roster?,
-        now: Date,
         probe: (pid_t) -> ProcessState
     ) -> Visibility
 }
@@ -199,11 +197,20 @@ Every route to `hide` requires a pid the record itself supplied, probed and
 found gone or recycled. Absence of information — no roster, no entry, no start
 time — always shows.
 
-The two tolerances differ on purpose. `startedAt` marks when the *session*
-began, roughly a second after its process started (measured across four live
-sessions: +0.40, +0.58, +1.08, +1.26 s), so a 60 s band absorbs that gap
-without admitting a reused pid. `procStart` is the process clock itself, so
-±2 s is appropriate.
+The two tolerances differ on purpose, and what each one forgives changed once the
+interactive comparison became one-sided (see below).
+
+`procStart` is the process clock itself, so ±2 s is appropriate.
+
+`startedAt` marks when the *session* began, about a second **after** its process
+(measured across four live sessions: +0.40, +0.58, +1.08, +1.26 s). That gap is
+*negative* drift under the one-sided test and is therefore shown unconditionally
+— the 60 s band is not what accommodates it. What the band actually forgives is a
+process that appears to have started up to 60 s *later* than the record, which is
+the direction that indicates reuse. It is generous enough to absorb clock skew or
+a record written just ahead of its process, and far tighter than any real reuse:
+macOS recycles a pid only after roughly 100,000 intervening spawns, so a
+recycled process is later by minutes at least, never by seconds.
 
 **The interactive comparison is one-sided.** A recycled pid always belongs to a
 process that started *later* than the session that recorded it, so only
@@ -327,7 +334,8 @@ fixture roster bytes:
   pid → hide; entry with mismatched `procStart` → hide; entry alive and
   matching → show
 - session with neither pid nor short id → show
-- probe reports alive with no start time → show, on both paths
+- probe reports alive with no start time → show. Tested on the interactive path;
+  both paths share the same `judge` guard, so the behaviour is identical.
 
 Three regressions get dedicated tests:
 
