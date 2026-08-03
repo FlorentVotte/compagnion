@@ -1,4 +1,5 @@
 import AppKit
+import CompagnionCore
 import Foundation
 
 /// No-op unless `COMPAGNION_DEBUG` is set — mirrors the other components'
@@ -242,19 +243,25 @@ final class SessionMonitor: ObservableObject {
         let fallbackSize = defaultWindowSize
         Task.detached(priority: .utility) { [enricher] in
             let result = Self.fetchSessions(claudePath: claudePath)
+            // Both are `let`, assigned once on each branch: the closure below
+            // captures them, and capturing a `var` is an error in the Swift 6
+            // language mode. This mirrors how `enrichment` was already handled.
             let enrichment: Enrichment
+            let hidden: Set<String>
             if case .success(let sessions) = result {
                 enrichment = Self.enrich(sessions: sessions, using: enricher, windowSizes: sizes, fallbackSize: fallbackSize)
+                hidden = Self.hiddenIDs(in: sessions)
             } else {
                 enrichment = Enrichment()
+                hidden = []
             }
             await MainActor.run {
-                self.apply(result: result, enrichment: enrichment)
+                self.apply(result: result, enrichment: enrichment, hidden: hidden)
             }
         }
     }
 
-    private func apply(result: Result<[ClaudeSession], Error>, enrichment: Enrichment) {
+    private func apply(result: Result<[ClaudeSession], Error>, enrichment: Enrichment, hidden: Set<String>) {
         isRefreshing = false
         switch result {
         case .success(let sessions):
@@ -267,7 +274,7 @@ final class SessionMonitor: ObservableObject {
                 if let existing = contextUsage[id], existing.measuredAt > usage.measuredAt { continue }
                 contextUsage[id] = usage
             }
-            rebuild(from: sessions)
+            rebuild(from: sessions, hidden: hidden)
             lastError = nil
             lastUpdated = Date()
         case .failure(let error):
@@ -277,8 +284,12 @@ final class SessionMonitor: ObservableObject {
 
     /// Rebuilds `displays` from the authoritative session list plus side state,
     /// dropping side state for sessions that have gone away.
-    private func rebuild(from sessions: [ClaudeSession]) {
-        let liveIDs = Set(sessions.map(\.id))
+    private func rebuild(from sessions: [ClaudeSession], hidden: Set<String>) {
+        // Filtering before `liveIDs` means a hidden session also sheds its side
+        // state below, and any approval held for it resolves fail-open — a dead
+        // process cannot answer one.
+        let visible = hidden.isEmpty ? sessions : sessions.filter { !hidden.contains($0.id) }
+        let liveIDs = Set(visible.map(\.id))
         identities = identities.filter { liveIDs.contains($0.key) }
         aiTitles = aiTitles.filter { liveIDs.contains($0.key) }
         contextUsage = contextUsage.filter { liveIDs.contains($0.key) }
@@ -297,9 +308,9 @@ final class SessionMonitor: ObservableObject {
         let vanished = announcedWaiting.subtracting(liveIDs)
         announcedWaiting.formIntersection(liveIDs)
         for id in vanished { onWaitingEpisodeEnd?(id) }
-        hostResolver.invalidate(keepingSessionPids: Set(sessions.compactMap(\.pid)))
+        hostResolver.invalidate(keepingSessionPids: Set(visible.compactMap(\.pid)))
 
-        var built = sessions.map { session -> SessionDisplay in
+        var built = visible.map { session -> SessionDisplay in
             var display = SessionDisplay(session: session)
             if let identity = identities[session.id] {
                 display.gitBranch = identity.gitBranch
@@ -361,6 +372,36 @@ final class SessionMonitor: ObservableObject {
             onWaitingEpisodeEnd?(id)
         }
         announcedWaiting = waitingNow
+    }
+
+    /// Ids of sessions whose owning process is provably gone. Runs off the main
+    /// actor: reads the daemon roster and probes pids. Hides nothing unless
+    /// death is established — see `Staleness`.
+    private nonisolated static func hiddenIDs(in sessions: [ClaudeSession]) -> Set<String> {
+        let roster = DaemonRoster.load()
+        // `proto` is a required key, so a rename or removal fails the whole
+        // decode: nothing is hidden and the phantom-card bug returns with no
+        // other signal. This line is the only announcement of a stale decoder.
+        if let roster, roster.proto != 1 {
+            monitorLog("roster proto is \(roster.proto), not 1 — the decoder may be stale")
+        }
+        var hidden: Set<String> = []
+        for session in sessions {
+            let facts = SessionFacts(
+                id: session.id,
+                pid: session.pid.map { pid_t($0) },
+                shortId: session.shortId,
+                startedAt: session.startedAt.map { Date(timeIntervalSince1970: $0 / 1000) }
+            )
+            guard case .hide(let reason) = Staleness.visibility(
+                of: facts,
+                roster: roster,
+                probe: SystemProcessProbe.state(of:)
+            ) else { continue }
+            hidden.insert(session.id)
+            monitorLog("hiding \(session.shortId ?? session.id): \(reason)")
+        }
+        return hidden
     }
 
     private nonisolated static func enrich(
