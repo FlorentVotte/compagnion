@@ -61,7 +61,7 @@ Everything else follows the spec exactly. `Visibility` keeps its spec name but c
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `public enum ProcessState: Equatable, Sendable { case alive(started: Date); case dead }` and `public enum SystemProcessProbe { public static func state(of pid: pid_t) -> ProcessState }`. Later tasks pass `SystemProcessProbe.state(of:)` as a `(pid_t) -> ProcessState` closure.
+- Produces: `public enum ProcessState: Equatable, Sendable { case alive(started: Date?); case dead }` and `public enum SystemProcessProbe { public static func state(of pid: pid_t) -> ProcessState }`. Later tasks pass `SystemProcessProbe.state(of:)` as a `(pid_t) -> ProcessState` closure. `started` is optional because `kill` can prove a process alive while `sysctl` yields no start time; reporting `.dead` there would hide a live session, violating the fail-open constraint. `nil` means "alive, start time unknown" and Task 3 must fall through to `.show`.
 
 - [ ] **Step 1: Restructure `Package.swift`**
 
@@ -125,6 +125,18 @@ final class ProcessProbeTests: XCTestCase {
         XCTAssertEqual(SystemProcessProbe.state(of: 0), .dead)
         XCTAssertEqual(SystemProcessProbe.state(of: -1), .dead)
     }
+
+    /// A process owned by another user makes `kill` fail with EPERM, which the
+    /// probe must read as "exists" rather than "gone". launchd is always pid 1
+    /// and always root-owned, so this exercises the EPERM branch for real.
+    /// (If the suite ever runs as root, `kill` returns 0 instead and the
+    /// process is still alive, so the assertion holds either way.)
+    func testCrossUserProcessReportsAlive() {
+        guard case .alive(let started) = SystemProcessProbe.state(of: 1) else {
+            return XCTFail("launchd must report alive, not dead")
+        }
+        XCTAssertNotNil(started, "sysctl reads start times across users on macOS")
+    }
 }
 ```
 
@@ -144,8 +156,14 @@ import Foundation
 /// Whether a pid is running, and if so when it started. The start time is what
 /// makes pid reuse detectable: a recycled pid belongs to a process that began
 /// long after the session that recorded it.
+///
+/// `started` is optional because the two syscalls can disagree: `kill` may
+/// prove a process exists while `sysctl` returns nothing for it. Reporting
+/// `.dead` in that case would hide a session that is genuinely alive, so
+/// "alive, start time unknown" has to be representable — callers then cannot
+/// judge pid reuse and must show the session.
 public enum ProcessState: Equatable, Sendable {
-    case alive(started: Date)
+    case alive(started: Date?)
     case dead
 }
 
@@ -158,8 +176,10 @@ public enum SystemProcessProbe {
         guard pid > 0 else { return .dead }
         // EPERM means the process exists but belongs to someone else.
         guard kill(pid, 0) == 0 || errno == EPERM else { return .dead }
-        guard let started = startTime(of: pid) else { return .dead }
-        return .alive(started: started)
+        // `kill` has established the process exists. A missing start time makes
+        // pid reuse unjudgeable, not the process dead — pass the uncertainty up
+        // rather than converting it into a hide.
+        return .alive(started: startTime(of: pid))
     }
 
     /// `sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID, pid)` -> `kp_proc.p_starttime`.
@@ -183,7 +203,7 @@ public enum SystemProcessProbe {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter ProcessProbeTests`
-Expected: PASS, 3 tests.
+Expected: PASS, 4 tests.
 
 - [ ] **Step 6: Verify the app still builds and bundles**
 
@@ -479,6 +499,17 @@ final class StalenessTests: XCTestCase {
         XCTAssertEqual(result, .show)
     }
 
+    /// `kill` proved the process alive but `sysctl` returned no start time.
+    /// Reuse is unjudgeable, so the session must stay visible even though its
+    /// `startedAt` is nowhere near the (unknown) process start.
+    func testAliveWithUnknownStartTimeShows() {
+        let result = Staleness.visibility(
+            of: facts(pid: 1789, startedAt: now.addingTimeInterval(-4200)),
+            roster: nil, now: now, probe: { _ in .alive(started: nil) }
+        )
+        XCTAssertEqual(result, .show)
+    }
+
     // MARK: - Background agents (short id only)
 
     func testBackgroundShowsWhenRosterIsUnreadable() {
@@ -691,8 +722,9 @@ public enum Staleness {
         case .dead:
             return .hide(reason: "\(label) is not running")
         case .alive(let started):
-            // No reference point, or an unparseable one — cannot judge reuse.
-            guard let expectedStart else { return .show }
+            // Cannot judge reuse without both a start time for the live process
+            // and a reference point to compare it against, so show.
+            guard let started, let expectedStart else { return .show }
             let drift = abs(started.timeIntervalSince(expectedStart))
             guard drift > tolerance else { return .show }
             return .hide(reason: "\(label) started \(Int(drift))s from its record — reused pid")
@@ -704,12 +736,12 @@ public enum Staleness {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter StalenessTests`
-Expected: PASS, 14 tests.
+Expected: PASS, 15 tests.
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`
-Expected: PASS, 24 tests across three suites (3 probe + 7 roster + 14 staleness; the roster suite reports one skip on a UTC machine).
+Expected: PASS, 26 tests across three suites (4 probe + 7 roster + 15 staleness; the roster suite reports one skip on a UTC machine).
 
 - [ ] **Step 6: Commit**
 
